@@ -1,0 +1,49 @@
+{
+  "name": "crypto_rebalancer_node",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "migrate": "node src/utils/migrate.js",
+    "migrate:fk": "node src/utils/migrate-foreign-keys.js",
+    "migrate:price-source": "node src/utils/migrate-price-source.js",
+    "migrate:price-history": "node src/utils/migrate-price-history.js",
+    "render-setup": "node src/utils/render-migration.js",
+    "render-start": "npm run render-setup && npm start",
+    "bot": "node src/scripts/runBot.js",
+    "test:bot-logic": "node src/tests/bot-logic-test.js",
+    "test:execute-trade": "node src/tests/execute-trade-test.js",
+    "view:trades": "node src/tests/view-trades.js",
+    "test:direct-trade": "node src/tests/direct-trade-test.js",
+    "test:3commas": "node src/tests/3commas-api-test.js"
+  },
+  "keywords": [
+    "crypto",
+    "rebalancer",
+    "3commas",
+    "trading"
+  ],
+  "author": "",
+  "license": "ISC",
+  "description": "Node.js implementation of a cryptocurrency portfolio rebalancer using 3Commas API",
+  "dependencies": {
+    "axios": "^1.6.7",
+    "bcrypt": "^6.0.0",
+    "chalk": "^4.1.2",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "express-validator": "^7.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "node-schedule": "^2.1.1",
+    "pg": "^8.16.2",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
