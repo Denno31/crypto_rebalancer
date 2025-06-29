@@ -368,6 +368,13 @@ class BotService {
         throw new Error(`Failed to get account data: ${JSON.stringify(error)}`);
       }
       
+      // Check if account data is properly formatted
+      if (!accountData || !accountData.balances || !Array.isArray(accountData.balances)) {
+        // Log the actual response for debugging
+        console.log('Invalid account data format:', JSON.stringify(accountData));
+        throw new Error(`Invalid account data format from 3Commas API: balances array not found`);
+      }
+      
       // Find coin balance
       const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
       
