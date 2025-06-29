@@ -31,8 +31,10 @@ exports.getApiConfigs = async (req, res) => {
 
 exports.updateApiConfig = async (req, res) => {
   try {
+    console.log(req.body)
     const { name } = req.params;
-    const { apiKey, apiSecret, mode } = req.body;
+    // Use snake_case from API, consistent with frontend
+    const { api_key, api_secret, mode } = req.body;
     
     // Find if config already exists for this user
     let config = await ApiConfig.findOne({
@@ -45,16 +47,16 @@ exports.updateApiConfig = async (req, res) => {
     if (config) {
       // Update existing config
       await config.update({
-        apiKey,
-        apiSecret,
+        apiKey: api_key, // Convert from snake_case (API) to camelCase (model)
+        apiSecret: api_secret, // Convert from snake_case (API) to camelCase (model)
         mode: mode || 'paper'
       });
     } else {
       // Create new config
       config = await ApiConfig.create({
         name,
-        apiKey,
-        apiSecret,
+        apiKey: api_key, // Convert from snake_case (API) to camelCase (model)
+        apiSecret: api_secret, // Convert from snake_case (API) to camelCase (model)
         mode: mode || 'paper',
         userId: req.userId
       });
@@ -90,7 +92,20 @@ exports.getSystemConfig = async (req, res) => {
       });
     }
     
-    return res.json(config);
+    // Convert camelCase model to snake_case for API response
+    const formattedConfig = {
+      id: config.id,
+      pricing_source: config.pricingSource,
+      fallback_source: config.fallbackSource,
+      update_interval: config.updateInterval,
+      websocket_enabled: config.websocketEnabled,
+      analytics_enabled: config.analyticsEnabled,
+      analytics_save_interval: config.analyticsSaveInterval,
+      created_at: config.createdAt,
+      updated_at: config.updatedAt
+    };
+    
+    return res.json(formattedConfig);
   } catch (error) {
     console.error('Error getting system config:', error);
     return res.status(500).json({
@@ -101,14 +116,16 @@ exports.getSystemConfig = async (req, res) => {
 };
 
 exports.updateSystemConfig = async (req, res) => {
+  console.log('the system config', req.body)
   try {
+    // Use snake_case from API, consistent with frontend
     const {
-      pricingSource,
-      fallbackSource,
-      updateInterval,
-      websocketEnabled,
-      analyticsEnabled,
-      analyticsSaveInterval
+      pricing_source,
+      fallback_source,
+      update_interval,
+      websocket_enabled,
+      analytics_enabled,
+      analytics_save_interval
     } = req.body;
     
     // Find or create config
@@ -118,27 +135,40 @@ exports.updateSystemConfig = async (req, res) => {
     
     if (!config) {
       config = await SystemConfig.create({
-        pricingSource: pricingSource || '3commas',
-        fallbackSource: fallbackSource || 'coingecko',
-        updateInterval: updateInterval || 1,
-        websocketEnabled: websocketEnabled !== undefined ? websocketEnabled : true,
-        analyticsEnabled: analyticsEnabled !== undefined ? analyticsEnabled : true,
-        analyticsSaveInterval: analyticsSaveInterval || 60,
+        pricingSource: pricing_source || '3commas', // Convert from snake_case (API) to camelCase (model)
+        fallbackSource: fallback_source || 'coingecko', // Convert from snake_case (API) to camelCase (model)
+        updateInterval: update_interval || 1, // Convert from snake_case (API) to camelCase (model)
+        websocketEnabled: websocket_enabled !== undefined ? websocket_enabled : true, // Convert from snake_case (API) to camelCase (model)
+        analyticsEnabled: analytics_enabled !== undefined ? analytics_enabled : true, // Convert from snake_case (API) to camelCase (model)
+        analyticsSaveInterval: analytics_save_interval || 60, // Convert from snake_case (API) to camelCase (model)
         userId: req.userId
       });
     } else {
       // Update existing config
       await config.update({
-        pricingSource: pricingSource !== undefined ? pricingSource : config.pricingSource,
-        fallbackSource: fallbackSource !== undefined ? fallbackSource : config.fallbackSource,
-        updateInterval: updateInterval !== undefined ? updateInterval : config.updateInterval,
-        websocketEnabled: websocketEnabled !== undefined ? websocketEnabled : config.websocketEnabled,
-        analyticsEnabled: analyticsEnabled !== undefined ? analyticsEnabled : config.analyticsEnabled,
-        analyticsSaveInterval: analyticsSaveInterval !== undefined ? analyticsSaveInterval : config.analyticsSaveInterval
+        pricingSource: pricing_source !== undefined ? pricing_source : config.pricingSource, // Convert from snake_case (API) to camelCase (model)
+        fallbackSource: fallback_source !== undefined ? fallback_source : config.fallbackSource, // Convert from snake_case (API) to camelCase (model)
+        updateInterval: update_interval !== undefined ? update_interval : config.updateInterval, // Convert from snake_case (API) to camelCase (model)
+        websocketEnabled: websocket_enabled !== undefined ? websocket_enabled : config.websocketEnabled, // Convert from snake_case (API) to camelCase (model)
+        analyticsEnabled: analytics_enabled !== undefined ? analytics_enabled : config.analyticsEnabled, // Convert from snake_case (API) to camelCase (model)
+        analyticsSaveInterval: analytics_save_interval !== undefined ? analytics_save_interval : config.analyticsSaveInterval // Convert from snake_case (API) to camelCase (model)
       });
     }
     
-    return res.json(config);
+    // Convert camelCase model to snake_case for API response
+    const formattedConfig = {
+      id: config.id,
+      pricing_source: config.pricingSource,
+      fallback_source: config.fallbackSource,
+      update_interval: config.updateInterval,
+      websocket_enabled: config.websocketEnabled,
+      analytics_enabled: config.analyticsEnabled,
+      analytics_save_interval: config.analyticsSaveInterval,
+      created_at: config.createdAt,
+      updated_at: config.updatedAt
+    };
+    
+    return res.json(formattedConfig);
   } catch (error) {
     console.error('Error updating system config:', error);
     return res.status(500).json({
