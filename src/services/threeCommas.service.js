@@ -105,7 +105,7 @@ class ThreeCommasService {
   
   /**
    * Get market price for a trading pair
-   * @param {String} pair - Trading pair (e.g. BTC_USDT)
+   * @param {String} pair - Trading pair (e.g. BTC_USDT) - Note: Internally we use TARGET_BASE format
    * @returns {Promise<Array>} - [error, priceData]
    */
   async getMarketPrice(pair) {
@@ -115,28 +115,38 @@ class ThreeCommasService {
       const [baseCoin, quoteCoin] = pair.split('_');
       console.log(`Fetching market price for ${baseCoin}_${quoteCoin}`);
       
-      // 1. Try the public currency rates endpoint
+      // 1. Try using the verified working endpoint format
       try {
-        // This simpler endpoint doesn't require auth and works for simple price data
-        const response = await axios.get(`${this.baseUrl}/public/api/v1/currency_rates`, {
+        // Use the known working endpoint as demonstrated by the user
+        // https://api.3commas.io/public/api/ver1/accounts/currency_rates?market_code=binance&pair=USDT_ADA
+        const pairFormatted = `${quoteCoin}_${baseCoin}`;
+        const response = await axios.get(`${this.baseUrl}/public/api/ver1/accounts/currency_rates`, {
+          params: {
+            pair: pairFormatted,
+            market_code: 'binance'
+          },
           timeout: this.requestTimeout
         });
         
-        // The response contains prices for major coins in USD
-        if (response.data && quoteCoin.toUpperCase() === 'USDT' && response.data[baseCoin.toLowerCase()]) {
-          console.log(`Found price via currency_rates: ${JSON.stringify(response.data[baseCoin.toLowerCase()])}`);
-          return [null, { last: response.data[baseCoin.toLowerCase()].last }];
+        // If we get a valid response with price data
+        if (response.data && response.data.last) {
+          console.log(`Found price via accounts/currency_rates: ${JSON.stringify(response.data)}`);
+          return [null, response.data];
         }
       } catch (err) {
         console.log('Currency rates endpoint failed:', err.message);
         // Continue to next attempt
       }
       
-      // 2. Try the pairs conversion endpoint
+      // 2. Try fallback to API v2 endpoint (if the first one fails)
       try {
-        const response = await axios.get(`${this.baseUrl}/public/api/v1/currency_rate_for_pair`, {
+        // Note: For this endpoint, the pair should be in format BASE_TARGET (e.g. USDT_BTC)
+        // This is different from our internal format of TARGET_BASE (e.g. BTC_USDT)
+        const pairFormatted = `${quoteCoin}_${baseCoin}`;
+        
+        const response = await axios.get(`${this.baseUrl}/public/api/ver1/accounts/market_pairs`, {
           params: {
-            pair: `${baseCoin}_${quoteCoin}`,
+            pair: pairFormatted,
             market_code: 'binance' // Use binance as default market
           },
           timeout: this.requestTimeout
@@ -154,8 +164,11 @@ class ThreeCommasService {
       // 3. Try the signed account endpoint (needs authentication)
       try {
         // This endpoint needs authentication and will be signed by request() method
+        // Use the correct pair format and add market_code
+        const pairFormatted = `${quoteCoin}_${baseCoin}`;
         const [error, data] = await this.request('accounts', 'currency_rates', { 
-          pair: `${baseCoin}_${quoteCoin}`
+          pair: pairFormatted,
+          market_code: 'binance'
         });
         
         if (!error && data && data.last) {
