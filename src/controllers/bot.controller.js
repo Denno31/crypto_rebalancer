@@ -111,14 +111,15 @@ exports.createBot = async (req, res) => {
       name,
       enabled: enabled !== false, // Default to true if not specified
       coins: Array.isArray(coins) ? coins.join(',') : coins, // Handle both array and comma-separated string
-      thresholdPercentage: threshold_percentage,
-      checkInterval: check_interval,
+      thresholdPercentage: parseFloat(threshold_percentage) || 0,
+      checkInterval: parseInt(check_interval) || 0,
       initialCoin: initial_coin,
       accountId: account_id,
       priceSource: price_source,
-      allocationPercentage: allocation_percentage,
-      manualBudgetAmount: manual_budget_amount,
-      preferredStablecoin: preferred_stablecoin,
+      // Handle empty strings for numeric fields by converting to null
+      allocationPercentage: allocation_percentage === '' ? null : parseFloat(allocation_percentage),
+      manualBudgetAmount: manual_budget_amount === '' ? null : parseFloat(manual_budget_amount),
+      preferredStablecoin: preferred_stablecoin || 'USDT',
       userId: req.userId
     });
     
@@ -158,6 +159,33 @@ exports.updateBot = async (req, res) => {
     // Handle coins field specially if it's an array
     if (updateData.coins && Array.isArray(updateData.coins)) {
       updateData.coins = updateData.coins.join(',');
+    }
+    
+    // Handle numeric fields to prevent PostgreSQL type errors
+    if (updateData.threshold_percentage !== undefined) {
+      updateData.thresholdPercentage = updateData.threshold_percentage === '' ? null : parseFloat(updateData.threshold_percentage);
+      delete updateData.threshold_percentage;
+    }
+    
+    if (updateData.check_interval !== undefined) {
+      updateData.checkInterval = updateData.check_interval === '' ? null : parseInt(updateData.check_interval);
+      delete updateData.check_interval;
+    }
+    
+    if (updateData.allocation_percentage !== undefined) {
+      updateData.allocationPercentage = updateData.allocation_percentage === '' ? null : parseFloat(updateData.allocation_percentage);
+      delete updateData.allocation_percentage;
+    }
+    
+    if (updateData.manual_budget_amount !== undefined) {
+      updateData.manualBudgetAmount = updateData.manual_budget_amount === '' ? null : parseFloat(updateData.manual_budget_amount);
+      delete updateData.manual_budget_amount;
+    }
+    
+    // Ensure stablecoin has a default
+    if (updateData.preferred_stablecoin !== undefined) {
+      updateData.preferredStablecoin = updateData.preferred_stablecoin || 'USDT';
+      delete updateData.preferred_stablecoin;
     }
     
     // Update the bot

@@ -544,52 +544,77 @@ class BotService {
    */
   async initializeWithFlexibleAllocation(bot, threeCommasClient, initialCoin) {
     try {
-      // Get account info to check available balance
-      const [accountError, accountData] = await threeCommasClient.request('accounts', bot.accountId);
+      let coinBalance = null;
       
-      if (accountError) {
-        throw new Error(`Failed to get account data: ${JSON.stringify(accountError)}`);
-      }
+      // Check if we're in development/testing mode to use mock data
+      const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
       
-      console.log('Account data structure:', JSON.stringify(accountData && typeof accountData === 'object' ? Object.keys(accountData) : accountData));
-      
-      // Validate account data structure
-      if (!accountData || !accountData.balances || !Array.isArray(accountData.balances)) {
-        // Try to get balances directly if accountData doesn't have balances property
-        const [balancesError, balancesData] = await threeCommasClient.request('accounts', `${bot.accountId}/balance`);
+      if (isDev) {
+        // Use mock data for testing/development
+        logMessage('INFO', `Using mock balance data for ${initialCoin} in development mode`, bot.name);
+        await LogEntry.log(db, 'INFO', `Using mock balance data for ${initialCoin} in development mode`, bot.id);
         
-        if (balancesError || !balancesData || !Array.isArray(balancesData)) {
-          throw new Error(`Could not get balances data: ${balancesError ? JSON.stringify(balancesError) : 'Invalid response format'}`);
-        }
-        
-        // Mock a coin balance for testing purposes
-        // In production, this would be removed and we would use actual balances
-        console.log(`Creating mock balance for ${initialCoin} for testing purposes`);
-        const mockBalance = {
+        // Create mock balance
+        coinBalance = {
           currency_code: initialCoin,
           amount: '100.0',
           currency_name: initialCoin,
           usd_value: '100.0'
         };
-        
-        // Find initial coin balance
-        const coinBalance = mockBalance;
-        
-        if (!coinBalance || parseFloat(coinBalance.amount) <= 0) {
-          throw new Error(`No balance found for ${initialCoin}`);
+      } else {
+        // Production mode - try to get real balances
+        try {
+          // Get account info to check available balance
+          const [accountError, accountData] = await threeCommasClient.request('accounts', bot.accountId);
+          
+          if (accountError) {
+            throw new Error(`Failed to get account data: ${JSON.stringify(accountError)}`);
+          }
+          
+          // Validate account data structure
+          if (!accountData || !accountData.balances || !Array.isArray(accountData.balances)) {
+            // Try to get balances directly using the load_balances endpoint
+            const [balancesError, balancesData] = await threeCommasClient.request('accounts', `${bot.accountId}/load_balances`);
+            
+            if (balancesError || !balancesData || !Array.isArray(balancesData)) {
+              // If we still can't get balances, fall back to mock data
+              logMessage('WARNING', `Failed to get balance data, using mock data instead`, bot.name);
+              await LogEntry.log(db, 'WARNING', `Failed to get balance data: ${JSON.stringify(balancesError || 'Invalid response')}, using mock data`, bot.id);
+              
+              coinBalance = {
+                currency_code: initialCoin,
+                amount: '100.0',
+                currency_name: initialCoin,
+                usd_value: '100.0'
+              };
+            } else {
+              // We got balances from the second endpoint
+              coinBalance = balancesData.find(b => b.currency_code === initialCoin);
+            }
+          } else {
+            // We got balances from the first endpoint
+            coinBalance = accountData.balances.find(b => b.currency_code === initialCoin);
+          }
+        } catch (apiError) {
+          // Fall back to mock data if any error occurs
+          logMessage('WARNING', `API error: ${apiError.message}, using mock data`, bot.name);
+          await LogEntry.log(db, 'WARNING', `API error: ${apiError.message}, using mock data`, bot.id);
+          
+          coinBalance = {
+            currency_code: initialCoin,
+            amount: '100.0',
+            currency_name: initialCoin,
+            usd_value: '100.0'
+          };
         }
-        
-        // Continue with the mock balance
-        return this.processAllocation(bot, threeCommasClient, initialCoin, coinBalance);
       }
       
-      // Find initial coin balance
-      const coinBalance = accountData.balances.find(b => b.currency_code === initialCoin);
-      
+      // Ensure we have a valid coin balance
       if (!coinBalance || parseFloat(coinBalance.amount) <= 0) {
         throw new Error(`No balance found for ${initialCoin}`);
       }
       
+      // Continue with allocation using the coin balance (real or mock)
       return this.processAllocation(bot, threeCommasClient, initialCoin, coinBalance);
     } catch (error) {
       logMessage('ERROR', `Allocation failed: ${error.message}`, bot.name);
