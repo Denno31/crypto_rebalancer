@@ -1,9 +1,13 @@
 const db = require('../models');
 const Bot = db.bot;
+const BotAsset = db.botAsset;
 const PriceHistory = db.priceHistory;
 const Trade = db.trade;
 const LogEntry = db.logEntry;
+const ApiConfig = db.apiConfig;
 const { Op } = require('sequelize');
+const ThreeCommasService = require('../services/threeCommas.service');
+const priceService = require('../services/price.service');
 
 // Helper functions
 const botToResponse = (bot) => {
@@ -25,7 +29,10 @@ const botToResponse = (bot) => {
     updatedAt: bot.updatedAt,
     referenceCoin: bot.referenceCoin,
     globalPeakValue: bot.globalPeakValue,
-    minAcceptableValue: bot.minAcceptableValue
+    minAcceptableValue: bot.minAcceptableValue,
+    allocationPercentage: bot.allocationPercentage,
+    manualBudgetAmount: bot.manualBudgetAmount,
+    preferredStablecoin: bot.preferredStablecoin || 'USDT'
   };
 };
 
@@ -86,7 +93,10 @@ exports.createBot = async (req, res) => {
       check_interval, 
       initial_coin, 
       account_id,
-      price_source
+      price_source,
+      allocation_percentage,
+      manual_budget_amount,
+      preferred_stablecoin
     } = req.body;
     
     // Validate required fields
@@ -106,6 +116,9 @@ exports.createBot = async (req, res) => {
       initialCoin: initial_coin,
       accountId: account_id,
       priceSource: price_source,
+      allocationPercentage: allocation_percentage,
+      manualBudgetAmount: manual_budget_amount,
+      preferredStablecoin: preferred_stablecoin,
       userId: req.userId
     });
     
@@ -370,6 +383,144 @@ exports.getBotLogs = async (req, res) => {
     console.error('Error getting bot logs:', error);
     return res.status(500).json({
       message: "Error getting bot logs",
+      error: error.message
+    });
+  }
+};
+
+// Get real-time asset data for a bot
+exports.getBotAssets = async (req, res) => {
+  try {
+    const botId = req.params.botId;
+    
+    // Find bot and ensure it belongs to the user
+    const bot = await Bot.findOne({
+      where: {
+        id: botId,
+        userId: req.userId
+      }
+    });
+    
+    if (!bot) {
+      return res.status(404).json({
+        message: "Bot not found"
+      });
+    }
+    
+    // Get API config
+    const apiConfig = await ApiConfig.findOne({
+      where: {
+        name: '3commas',
+        userId: req.userId
+      }
+    });
+    
+    if (!apiConfig) {
+      return res.status(404).json({
+        message: "3Commas API configuration not found"
+      });
+    }
+    
+    // Initialize 3commas client
+    const threeCommasClient = new ThreeCommasService(
+      apiConfig.apiKey,
+      apiConfig.apiSecret
+    );
+    
+    // Get bot assets from database
+    const botAssets = await BotAsset.findAll({
+      where: { botId },
+      order: [['updatedAt', 'DESC']]
+    });
+    
+    // If we have a current coin, ensure we get up-to-date USDT value
+    let updatedAssets = [...botAssets];
+    
+    if (bot.currentCoin) {
+      try {
+        // Get preferred stablecoin or default to USDT
+        const stablecoin = bot.preferredStablecoin || 'USDT';
+        
+        // Get latest price in the preferred stablecoin
+        const { price } = await priceService.getPrice(
+          { pricingSource: '3commas', fallbackSource: 'coingecko' },
+          { apiKey: apiConfig.apiKey, apiSecret: apiConfig.apiSecret },
+          bot.currentCoin,
+          stablecoin,
+          botId
+        );
+        
+        // Find or create asset record for current coin
+        let currentAsset = botAssets.find(asset => asset.coin === bot.currentCoin);
+        
+        // If bot has a current coin but no asset record, create one with estimated data
+        if (!currentAsset) {
+          // Attempt to get balance from 3Commas
+          const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
+          
+          if (!error && accountData && accountData.balances) {
+            const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
+            
+            if (coinBalance && parseFloat(coinBalance.amount) > 0) {
+              // Create asset record
+              const amount = parseFloat(coinBalance.amount);
+              const stablecoinEquivalent = amount * price;
+              
+              currentAsset = await BotAsset.create({
+                botId,
+                coin: bot.currentCoin,
+                amount,
+                entryPrice: price,
+                usdtEquivalent: stablecoinEquivalent, // Keep field name for DB compatibility
+                stablecoin: stablecoin,
+                lastUpdated: new Date()
+              });
+              
+              updatedAssets.push(currentAsset);
+            }
+          }
+        } else {
+          // Update existing asset with current stablecoin value
+          const stablecoinEquivalent = currentAsset.amount * price;
+          await currentAsset.update({
+            usdtEquivalent: stablecoinEquivalent, // Keep field name for DB compatibility
+            stablecoin: stablecoin, // Update stablecoin info
+            lastUpdated: new Date()
+          });
+          
+          // Update in our response array
+          const assetIndex = updatedAssets.findIndex(a => a.id === currentAsset.id);
+          if (assetIndex >= 0) {
+            updatedAssets[assetIndex] = {
+              ...updatedAssets[assetIndex].dataValues,
+              usdtEquivalent: stablecoinEquivalent,
+              stablecoin: stablecoin,
+              lastUpdated: new Date()
+            };
+          }
+        }
+      } catch (priceError) {
+        console.error(`Error updating asset price: ${priceError.message}`);
+        // Continue with existing data
+      }
+    }
+    
+    return res.json({
+      botId: bot.id,
+      currentCoin: bot.currentCoin,
+      assets: updatedAssets.map(asset => ({
+        id: asset.id,
+        coin: asset.coin,
+        amount: asset.amount,
+        usdtEquivalent: asset.usdtEquivalent,
+        entryPrice: asset.entryPrice,
+        lastUpdated: asset.lastUpdated
+      }))
+    });
+  } catch (error) {
+    console.error('Error getting bot assets:', error);
+    return res.status(500).json({
+      message: "Error getting bot assets",
       error: error.message
     });
   }

@@ -18,5 +18,6 @@ router.get('/:botId/state', botController.getBotState);
 router.get('/:botId/prices', botController.getBotPrices);
 router.get('/:botId/trades', botController.getBotTrades);
 router.get('/:botId/logs', botController.getBotLogs);
+router.get('/:botId/assets', botController.getBotAssets);
 
 module.exports = router;

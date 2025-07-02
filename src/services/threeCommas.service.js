@@ -104,6 +104,45 @@ class ThreeCommasService {
   }
   
   /**
+   * Get available coins from a 3Commas account
+   * @param {String} accountId - 3Commas account ID
+   * @returns {Promise<Array>} - [error, availableCoins]
+   */
+  async getAvailableCoins(accountId) {
+    try {
+      // Get account info to check available balances
+      const [error, accountData] = await this.request('accounts', accountId);
+      
+      if (error) {
+        console.error('Error fetching account data:', error);
+        return [error, null];
+      }
+      
+      if (!accountData || !accountData.balances) {
+        return [{ error: 'No balances found in account data' }, null];
+      }
+      
+      // Filter for coins with non-zero balances and format for frontend
+      const availableCoins = accountData.balances
+        .filter(balance => parseFloat(balance.amount) > 0)
+        .map(balance => ({
+          coin: balance.currency_code,
+          name: balance.currency_name || balance.currency_code,
+          amount: parseFloat(balance.amount),
+          amountInUsd: parseFloat(balance.usd_value) || 0
+        }));
+      
+      // Sort by USD value (highest first)
+      availableCoins.sort((a, b) => b.amountInUsd - a.amountInUsd);
+      
+      return [null, availableCoins];
+    } catch (error) {
+      console.error('Error in getAvailableCoins:', error);
+      return [error, null];
+    }
+  }
+  
+  /**
    * Get market price for a trading pair
    * @param {String} pair - Trading pair (e.g. BTC_USDT) - Note: Internally we use TARGET_BASE format
    * @returns {Promise<Array>} - [error, priceData]

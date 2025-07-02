@@ -9,5 +9,6 @@ router.use(authMiddleware.verifyToken);
 
 // Account routes
 router.get('/', accountController.getAccounts);
+router.get('/:accountId/coins', accountController.getAvailableCoins);
 
 module.exports = router;

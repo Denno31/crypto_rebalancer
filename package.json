@@ -17,7 +17,8 @@
     "test:execute-trade": "node src/tests/execute-trade-test.js",
     "view:trades": "node src/tests/view-trades.js",
     "test:direct-trade": "node src/tests/direct-trade-test.js",
-    "test:3commas": "node src/tests/3commas-api-test.js"
+    "test:3commas": "node src/tests/3commas-api-test.js",
+    "test:flexible-allocation": "node src/tests/flexible-allocation-test.js"
   },
   "keywords": [
     "crypto",
