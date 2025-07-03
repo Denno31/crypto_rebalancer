@@ -308,6 +308,8 @@ class BotService {
       // Log current state
       logMessage('INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, bot.name);
       logMessage('INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, bot.name);
+      await LogEntry.log(db, 'INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, botId);
+      await LogEntry.log(db, 'INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, botId);
       
       let bestDeviation = -Infinity;
       let eligibleCoins = [];

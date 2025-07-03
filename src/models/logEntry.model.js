@@ -53,6 +53,7 @@ module.exports = (sequelize, Sequelize) => {
       });
       
       console.log(`[${level.toUpperCase()}] ${message}`);
+      
       return entry;
     } catch (error) {
       console.error('Error logging message:', error);

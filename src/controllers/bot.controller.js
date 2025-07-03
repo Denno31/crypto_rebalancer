@@ -417,6 +417,73 @@ exports.getBotLogs = async (req, res) => {
   }
 };
 
+// Get trade decision logs for a bot - filtered on the server side for security
+exports.getTradeDecisionLogs = async (req, res) => {
+  console.log('in trade decision logs')
+  try {
+    const botId = req.params.botId;
+    const limit = parseInt(req.query.limit) || 100;
+    
+    // Build query - use snake_case 'bot_id' instead of camelCase 'botId'
+    const query = { bot_id: botId };
+    
+    // Get all logs for this bot
+    const logs = await LogEntry.findAll({
+      where: query,
+      order: [['timestamp', 'DESC']],
+      limit: limit * 3 // Get more logs than we need to ensure we have enough after filtering
+    });
+    
+    console.log(logs)
+    // Filter logs to find trade decision related entries - same logic as frontend but on server side
+    const tradeDecisionLogs = logs.filter(log => 
+      log.message.includes('Found') || 
+      log.message.includes('didn\'t qualify') || 
+      log.message.includes('deviation') ||
+      log.message.includes('threshold') ||
+      log.message.includes('TRADE PREVENTED') ||
+      log.message.includes('Portfolio value check')
+    );
+    
+    // Group logs by check sessions (using timestamps with a 5-second window)
+    const logGroups = [];
+    let currentGroup = [];
+    let lastTimestamp = null;
+
+    tradeDecisionLogs.forEach(log => {
+      const logTime = new Date(log.timestamp).getTime();
+      
+      // If this is a new log group (more than 5 seconds from the previous log)
+      if (!lastTimestamp || (logTime - lastTimestamp > 5000)) {
+        if (currentGroup.length > 0) {
+          logGroups.push([...currentGroup]);
+        }
+        currentGroup = [log];
+      } else {
+        currentGroup.push(log);
+      }
+      
+      lastTimestamp = logTime;
+    });
+    
+    // Add the last group if it exists
+    if (currentGroup.length > 0) {
+      logGroups.push(currentGroup);
+    }
+    
+    // Limit to requested number of groups
+    const limitedGroups = logGroups.slice(0, limit);
+    
+    return res.json(limitedGroups);
+  } catch (error) {
+    console.error('Error getting trade decision logs:', error);
+    return res.status(500).json({
+      message: "Error getting trade decision logs",
+      error: error.message
+    });
+  }
+};
+
 // Get real-time asset data for a bot
 exports.getBotAssets = async (req, res) => {
   try {
