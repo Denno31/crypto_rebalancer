@@ -321,6 +321,96 @@ const migrations = [
     description: 'Add commission_rate and commission_amount columns to trades table',
     up: require('./migrations/006_add_commission_fields_to_trades').up,
     down: require('./migrations/006_add_commission_fields_to_trades').down
+  },
+  {
+    id: '007_create_coin_deviations_table',
+    description: 'Create coin_deviations table for tracking historical coin deviations',
+    up: async (queryInterface) => {
+      console.log('Creating coin_deviations table...');
+      
+      try {
+        // Check if table exists
+        try {
+          await queryInterface.describeTable('coin_deviations');
+          console.log('coin_deviations table already exists');
+          return;
+        } catch (error) {
+          // Table doesn't exist, proceed with creation
+        }
+        
+        await queryInterface.createTable('coin_deviations', {
+          id: {
+            type: DataTypes.INTEGER,
+            primaryKey: true,
+            autoIncrement: true
+          },
+          bot_id: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            references: {
+              model: 'bots',
+              key: 'id'
+            },
+            onDelete: 'CASCADE'
+          },
+          base_coin: {
+            type: DataTypes.STRING,
+            allowNull: false
+          },
+          target_coin: {
+            type: DataTypes.STRING,
+            allowNull: false
+          },
+          base_price: {
+            type: DataTypes.FLOAT,
+            allowNull: false
+          },
+          target_price: {
+            type: DataTypes.FLOAT,
+            allowNull: false
+          },
+          deviation_percent: {
+            type: DataTypes.FLOAT,
+            allowNull: false
+          },
+          timestamp: {
+            type: DataTypes.DATE,
+            allowNull: false,
+            defaultValue: Sequelize.fn('NOW')
+          },
+          created_at: {
+            type: DataTypes.DATE,
+            allowNull: false,
+            defaultValue: Sequelize.fn('NOW')
+          },
+          updated_at: {
+            type: DataTypes.DATE,
+            allowNull: false,
+            defaultValue: Sequelize.fn('NOW')
+          }
+        });
+        
+        // Create indexes
+        await queryInterface.addIndex('coin_deviations', ['bot_id']);
+        await queryInterface.addIndex('coin_deviations', ['timestamp']);
+        await queryInterface.addIndex('coin_deviations', ['base_coin', 'target_coin']);
+        
+        console.log('coin_deviations table created successfully');
+      } catch (error) {
+        console.error('Error creating coin_deviations table:', error);
+        throw error;
+      }
+    },
+    down: async (queryInterface) => {
+      console.log('Dropping coin_deviations table...');
+      try {
+        await queryInterface.dropTable('coin_deviations');
+        console.log('coin_deviations table dropped successfully');
+      } catch (error) {
+        console.error('Error dropping coin_deviations table:', error);
+        throw error;
+      }
+    }
   }
 ];
 

@@ -425,18 +425,25 @@ exports.getTradeDecisionLogs = async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     
     // Build query - use snake_case 'bot_id' instead of camelCase 'botId'
-    const query = { bot_id: botId };
+    // After our updates, we now have a dedicated 'TRADE' level for trade decisions
+    const query = { 
+      bot_id: botId,
+      level: 'TRADE' // Filter by the new TRADE level
+    };
     
-    // Get all logs for this bot
+    // Get trade logs for this bot
     const logs = await LogEntry.findAll({
       where: query,
       order: [['timestamp', 'DESC']],
-      limit: limit * 3 // Get more logs than we need to ensure we have enough after filtering
+      limit: limit * 3 // Get more logs than we need to ensure we have enough for grouping
     });
     
-    console.log(logs)
-    // Filter logs to find trade decision related entries - same logic as frontend but on server side
+    console.log(logs);
+    
+    // With the TRADE level filter, all logs should be trade decisions
+    // For backward compatibility, we'll keep the message filter for older logs
     const tradeDecisionLogs = logs.filter(log => 
+      log.level === 'TRADE' || // New way - explicit TRADE level
       log.message.includes('Found') || 
       log.message.includes('didn\'t qualify') || 
       log.message.includes('deviation') ||

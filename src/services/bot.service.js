@@ -309,7 +309,7 @@ class BotService {
       logMessage('INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, bot.name);
       logMessage('INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, bot.name);
       await LogEntry.log(db, 'INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, botId);
-      await LogEntry.log(db, 'INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, botId);
+      await LogEntry.log(db, 'TRADE', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, botId);
       
       let bestDeviation = -Infinity;
       let eligibleCoins = [];
@@ -359,7 +359,10 @@ class BotService {
         const deviation = (priceNow / priceThen) / currentDeviationRatio - 1;
         
         logMessage('INFO', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, bot.name);
-        await LogEntry.log(db, 'INFO', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, botId);
+        await LogEntry.log(db, 'TRADE', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, botId);
+        
+        // Store coin deviation data for charting
+        await this.storeCoinDeviation(bot.id, bot.currentCoin, coin, currentPrice, priceNow, deviation * 100);
         
         // Estimate how many units we would get if we switched
         const newUnits = currentValueUSDT / priceNow;
@@ -367,12 +370,12 @@ class BotService {
         // Check if this coin's performance exceeds our threshold PLUS commission
         if (deviation > effectiveThreshold) {
           logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, bot.name);
-          await LogEntry.log(db, 'INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, botId);
+          await LogEntry.log(db, 'TRADE', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, botId);
           
           // Check re-entry rule - don't switch to a coin if we would get fewer units than max
           if (coinSnapshot.wasEverHeld && newUnits <= coinSnapshot.maxUnitsReached) {
             logMessage('INFO', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, bot.name);
-            await LogEntry.log(db, 'INFO', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, botId);
+            await LogEntry.log(db, 'TRADE', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, botId);
             continue; // Skip to the next coin
           }
           
@@ -392,21 +395,21 @@ class BotService {
         } else if (deviation > bot.thresholdPercentage / 100) {
           // This coin exceeds raw threshold but not after commission costs
           logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, bot.name);
-          await LogEntry.log(db, 'INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, botId);
+          await LogEntry.log(db, 'TRADE', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, botId);
         }
       }
       
       // Log eligible coins
       if (eligibleCoins.length > 0) {
         logMessage('INFO', `Found ${eligibleCoins.length} eligible coins for swap`, bot.name);
-        await LogEntry.log(db, 'INFO', `Found ${eligibleCoins.length} eligible coins for swap`, botId);
+        await LogEntry.log(db, 'TRADE', `Found ${eligibleCoins.length} eligible coins for swap`, botId);
         eligibleCoins.forEach(async (ec) => {
           logMessage('INFO', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, bot.name);
-          await LogEntry.log(db, 'INFO', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, botId);
+          await LogEntry.log(db, 'TRADE', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, botId);
         });
       } else {
         logMessage('INFO', `No eligible coins found for swap`, bot.name);
-        await LogEntry.log(db, 'INFO', `No eligible coins found for swap`, botId);
+        await LogEntry.log(db, 'TRADE', `No eligible coins found for swap`, botId);
       }
       
       // Check global profit protection if reference coin is set
@@ -423,14 +426,14 @@ class BotService {
           const minAcceptableValue = currentValue * (1 - (bot.globalThresholdPercentage / 100));
           await bot.update({ minAcceptableValue });
           logMessage('INFO', `Updated min acceptable value to ${minAcceptableValue}`, bot.name);
-          await LogEntry.log(db, 'INFO', `Updated min acceptable value to ${minAcceptableValue}`, botId);
+          await LogEntry.log(db, 'TRADE', `Portfolio value check: Updated min acceptable value to ${minAcceptableValue}`, botId);
         }
         
         // Check if trade would violate global profit protection
         if (currentValue < bot.minAcceptableValue) {
           logMessage('WARNING', `Trade prevented by global profit protection (Current: ${currentValue}, Min: ${bot.minAcceptableValue})`, bot.name);
-          await LogEntry.log(db, 'WARNING', 
-            `Trade prevented by global profit protection. ` +
+          await LogEntry.log(db, 'TRADE', 
+            `TRADE PREVENTED by global profit protection. ` +
             `Current value: ${currentValue}, ` +
             `Min acceptable: ${bot.minAcceptableValue}, ` +
             `Peak: ${bot.globalPeakValue}`, 
@@ -441,7 +444,7 @@ class BotService {
           if (bot.currentCoin !== bot.referenceCoin) {
             bestCoin = bot.referenceCoin;
             logMessage('INFO', `Forcing trade to reference coin ${chalk.yellow(bot.referenceCoin)} to preserve value`, bot.name);
-            await LogEntry.log(db, 'INFO', 
+            await LogEntry.log(db, 'TRADE', 
               `Forcing trade to reference coin ${bot.referenceCoin} to preserve value`, 
               botId
             );
@@ -454,7 +457,7 @@ class BotService {
       // Execute trade if needed
       if (bestCoin !== bot.currentCoin) {
         logMessage('INFO', `Found better coin: ${chalk.yellow(bestCoin)} vs ${chalk.yellow(bot.currentCoin)}`, bot.name);
-        await LogEntry.log(db, 'INFO', `Found better coin: ${bestCoin} vs ${bot.currentCoin}`, botId);
+        await LogEntry.log(db, 'TRADE', `Found better coin: ${bestCoin} vs ${bot.currentCoin}`, botId);
         
         // Execute trade
         const tradeResult = await this.executeTrade(bot, threeCommasClient, bot.currentCoin, bestCoin);
@@ -1081,6 +1084,40 @@ class BotService {
     } catch (error) {
       logMessage('ERROR', `Failed to update bot asset: ${error.message}`);
       throw error;
+    }
+  }
+
+  /**
+   * Store coin deviation data for historical tracking and charting
+   * @param {Number} botId - Bot ID
+   * @param {String} baseCoin - Base coin (current holding)
+   * @param {String} targetCoin - Target coin to compare against
+   * @param {Number} basePrice - Current price of base coin
+   * @param {Number} targetPrice - Current price of target coin
+   * @param {Number} deviationPercent - Percentage deviation between the coins
+   */
+  async storeCoinDeviation(botId, baseCoin, targetCoin, basePrice, targetPrice, deviationPercent) {
+    try {
+      const CoinDeviation = db.coinDeviation;
+      
+      // Store the deviation record
+      await CoinDeviation.create({
+        botId,
+        baseCoin,
+        targetCoin,
+        basePrice,
+        targetPrice,
+        deviationPercent,
+        timestamp: new Date()
+      });
+      
+      // For large datasets, we might want to implement a cleanup strategy
+      // to prevent the table from growing too large over time
+      // This could be a separate scheduled task
+      
+    } catch (error) {
+      // Log error but don't throw - this is a non-critical feature
+      logMessage('ERROR', `Failed to store coin deviation data: ${error.message}`);
     }
   }
 }
