@@ -256,11 +256,63 @@ class BotService {
         return false;
       }
       
-      // Check for better performing coins
-      const currentPrice = priceData[bot.currentCoin].price;
+      // Evaluate coins based on snapshot comparison (relative performance)
       let bestCoin = bot.currentCoin;
-      let bestPrice = currentPrice;
       
+      // Get current coin's snapshot
+      const CoinSnapshot = db.coinSnapshot;
+      const currentCoinSnapshot = await CoinSnapshot.findOne({
+        where: { botId: bot.id, coin: bot.currentCoin }
+      });
+      
+      if (!currentCoinSnapshot) {
+        logMessage('WARNING', `No snapshot found for ${bot.currentCoin}, creating one now`, bot.name);
+        
+        // Create a snapshot for current coin if it doesn't exist
+        await CoinSnapshot.create({
+          botId: bot.id,
+          coin: bot.currentCoin,
+          initialPrice: priceData[bot.currentCoin].price,
+          snapshotTimestamp: new Date(),
+          wasEverHeld: true,
+          unitsHeld: 0, // Will be updated later
+          ethEquivalentValue: 0 // Will be updated later
+        });
+        
+        // Return early since we just created the snapshot
+        return true;
+      }
+      
+      // Get current price of the coin we're holding
+      const currentPrice = priceData[bot.currentCoin].price;
+      const currentPriceThen = currentCoinSnapshot.initialPrice;
+      
+      // Calculate deviation ratio for current coin (how much it moved since snapshot)
+      const currentDeviationRatio = currentPrice / currentPriceThen;
+      
+      // Fetch asset to get current holding amount
+      const BotAsset = db.botAsset;
+      const currentAsset = await BotAsset.findOne({
+        where: { botId: bot.id, coin: bot.currentCoin }
+      });
+      
+      if (!currentAsset) {
+        logMessage('WARNING', `No asset found for ${bot.currentCoin}, unexpected state`, bot.name);
+        await LogEntry.log(db, 'WARNING', `No asset found for ${bot.currentCoin}, unexpected state`, botId);
+        return false;
+      }
+      
+      const currentValueUSDT = currentAsset.amount * currentPrice;
+      const currentValueInETH = await this.convertToETH(bot, currentValueUSDT);
+      
+      // Log current state
+      logMessage('INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, bot.name);
+      logMessage('INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, bot.name);
+      
+      let bestDeviation = -Infinity;
+      let eligibleCoins = [];
+      
+      // Evaluate each coin's performance relative to the current coin
       for (const coin of coins) {
         if (coin === bot.currentCoin) continue;
         
@@ -269,15 +321,84 @@ class BotService {
           continue;
         }
         
-        const price = priceData[coin].price;
-        const priceDiffPercent = ((price - currentPrice) / currentPrice) * 100;
+        // Get the snapshot for this coin
+        const coinSnapshot = await CoinSnapshot.findOne({
+          where: { botId: bot.id, coin: coin }
+        });
         
-        if (priceDiffPercent > bot.thresholdPercentage) {
-          if (price > bestPrice) {
-            bestCoin = coin;
-            bestPrice = price;
-          }
+        // If no snapshot exists, create one
+        if (!coinSnapshot) {
+          await CoinSnapshot.create({
+            botId: bot.id,
+            coin: coin,
+            initialPrice: priceData[coin].price,
+            snapshotTimestamp: new Date(),
+            wasEverHeld: false,
+            unitsHeld: 0,
+            ethEquivalentValue: 0
+          });
+          
+          // Skip this coin for now since we just created its snapshot
+          continue;
         }
+        
+        const priceNow = priceData[coin].price;
+        const priceThen = coinSnapshot.initialPrice;
+        
+        // Calculate the relative deviation between this coin and current coin
+        // Get the commission rate (default to 0.2% if not set)
+        const commissionRate = bot.commissionRate || 0.002;
+        
+        // This is where we decide which coin to buy based on our deviation calculation
+        // If we find a coin that exceeds our threshold PLUS commission costs, switch to it
+        // We multiply commission by 2 to account for both buy and eventual sell commission
+        const effectiveThreshold = (bot.thresholdPercentage / 100) + (commissionRate * 2);
+        
+        const deviation = (priceNow / priceThen) / currentDeviationRatio - 1;
+        
+        logMessage('INFO', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, bot.name);
+        
+        // Estimate how many units we would get if we switched
+        const newUnits = currentValueUSDT / priceNow;
+        
+        // Check if this coin's performance exceeds our threshold PLUS commission
+        if (deviation > effectiveThreshold) {
+          logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, bot.name);
+          
+          // Check re-entry rule - don't switch to a coin if we would get fewer units than max
+          if (coinSnapshot.wasEverHeld && newUnits <= coinSnapshot.maxUnitsReached) {
+            logMessage('INFO', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, bot.name);
+            await LogEntry.log(db, 'INFO', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, botId);
+            continue; // Skip to the next coin
+          }
+          
+          // This coin is our best option so far
+          if (bestCoin === null || deviation > bestDeviation) {
+            bestCoin = coin;
+            bestDeviation = deviation;
+          }
+          
+          // Add to eligible coins list for further processing
+          eligibleCoins.push({
+            coin,
+            price: priceNow,
+            deviation,
+            newUnits
+          });
+        } else if (deviation > bot.thresholdPercentage / 100) {
+          // This coin exceeds raw threshold but not after commission costs
+          logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, bot.name);
+        }
+      }
+      
+      // Log eligible coins
+      if (eligibleCoins.length > 0) {
+        logMessage('INFO', `Found ${eligibleCoins.length} eligible coins for swap`, bot.name);
+        eligibleCoins.forEach(ec => {
+          logMessage('INFO', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, bot.name);
+        });
+      } else {
+        logMessage('INFO', `No eligible coins found for swap`, bot.name);
       }
       
       // Check global profit protection if reference coin is set
@@ -435,74 +556,6 @@ class BotService {
   }
 
   /**
-   * Execute a trade on 3Commas
-   * @param {Object} bot - Bot instance
-   * @param {Object} threeCommasClient - 3Commas client
-   * @param {String} fromCoin - Source coin
-   * @param {String} toCoin - Target coin
-   * @returns {Promise<Object>} - Trade result
-   */
-  async executeTrade(bot, threeCommasClient, fromCoin, toCoin) {
-    try {
-      // Get account info
-      const [accountError, accountData] = await threeCommasClient.request('accounts', bot.accountId);
-      
-      if (accountError) {
-        throw new Error(`Failed to get account data: ${JSON.stringify(accountError)}`);
-      }
-      
-      // Find from coin balance
-      const fromCoinBalance = accountData.balances.find(b => b.currency_code === fromCoin);
-      
-      if (!fromCoinBalance || parseFloat(fromCoinBalance.amount) <= 0) {
-        throw new Error(`No balance found for ${fromCoin}`);
-      }
-      
-      // Create smart trade
-      const [tradeError, tradeData] = await threeCommasClient.request(
-        'smart_trades',
-        'create_smart_trade',
-        {
-          account_id: bot.accountId,
-          pair: `${toCoin}_${fromCoin}`,
-          position_type: 'buy',
-          units: {
-            [fromCoin]: fromCoinBalance.amount
-          },
-          take_profit: {
-            enabled: false
-          },
-          stop_loss: {
-            enabled: false
-          }
-        }
-      );
-      
-      if (tradeError) {
-        throw new Error(`Failed to create trade: ${JSON.stringify(tradeError)}`);
-      }
-      
-      // Get price data for tracking the change
-      const priceChange = await this.calculatePriceChange(fromCoin, toCoin);
-      
-      // Return successful trade data
-      return {
-        success: true,
-        tradeId: tradeData.id.toString(),
-        amount: parseFloat(fromCoinBalance.amount),
-        priceChange
-      };
-    } catch (error) {
-      await LogEntry.log(db, 'ERROR', `Trade execution failed: ${error.message}`, bot.id);
-      
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  /**
    * Calculate price change percentage between two coins
    * @param {String} fromCoin - Source coin
    * @param {String} toCoin - Target coin
@@ -532,6 +585,162 @@ class BotService {
     } catch (error) {
       logMessage('ERROR', `Error calculating price change: ${error.message}`, '');
       return 0; // Default to 0 if we can't calculate
+    }
+  }
+
+  /**
+   * Execute a trade from one coin to another with snapshot tracking
+   * @param {Object} bot - Bot instance
+   * @param {Object} threeCommasClient - 3Commas client
+   * @param {String} fromCoin - Coin to sell
+   * @param {String} toCoin - Coin to buy
+   * @returns {Promise<Object>} - Trade result
+   */
+  async executeTrade(bot, threeCommasClient, fromCoin, toCoin) {
+    try {
+      logMessage('INFO', `Executing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      
+      // Simulated trade execution (in a real scenario, this would interact with the exchange)
+      // Find the asset we are selling
+      const fromAsset = await BotAsset.findOne({
+        where: {
+          botId: bot.id,
+          coin: fromCoin
+        }
+      });
+      
+      if (!fromAsset) {
+        throw new Error(`No asset found for ${fromCoin}`);
+      }
+      
+      // Simulate getting the current price of both coins
+      const systemConfig = await SystemConfig.findOne({ where: { active: true } });
+      const apiConfig = await ApiConfig.findOne({ where: { userId: bot.userId } });
+      
+      if (!systemConfig || !apiConfig) {
+        throw new Error('Missing required configuration');
+      }
+      
+      // Get current prices for both coins
+      const { price: fromPrice } = await priceService.getPrice(
+        systemConfig, 
+        apiConfig, 
+        fromCoin, 
+        'USDT', 
+        bot.id
+      );
+      
+      const { price: toPrice } = await priceService.getPrice(
+        systemConfig, 
+        apiConfig, 
+        toCoin, 
+        'USDT', 
+        bot.id
+      );
+      
+      // Calculate how much of the target coin we'll get (accounting for commission)
+      const fromValueUSDT = fromAsset.amount * fromPrice;
+      
+      // Apply commission rate from bot config (or use default)
+      const commissionRate = bot.commissionRate || 0.002; // Default 0.2% if not configured
+      const commissionAmount = fromValueUSDT * commissionRate;
+      
+      // Calculate actual amount after commission is deducted
+      const netValueUSDT = fromValueUSDT - commissionAmount;
+      const toAmount = netValueUSDT / toPrice;
+      
+      // Track the commission paid
+      const totalCommissionsPaid = (bot.totalCommissionsPaid || 0) + commissionAmount;
+      
+      // Log the commission details
+      logMessage('INFO', `Commission: ${chalk.yellow(commissionAmount.toFixed(4))} USDT (${commissionRate * 100}%)`, bot.name);
+      logMessage('INFO', `Total commissions paid: ${chalk.yellow(totalCommissionsPaid.toFixed(4))} USDT`, bot.name);
+      
+      const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
+      
+      // Get the preferred stablecoin from the bot (or default to USDT)
+      const stablecoin = bot.preferredStablecoin || 'USDT';
+      
+      // Calculate ETH equivalent value for global tracking
+      const valueInETH = await this.convertToETH(bot, fromValueUSDT);
+      
+      // Create a new asset for the coin we're buying
+      const toAsset = await BotAsset.create({
+        botId: bot.id,
+        coin: toCoin,
+        amount: toAmount,
+        entryPrice: toPrice,
+        usdtEquivalent: fromValueUSDT,
+        lastUpdated: new Date(),
+        stablecoin: stablecoin
+      });
+      
+      // Delete the asset we sold
+      await fromAsset.destroy();
+      
+      // Update the snapshots using our dedicated helper method
+      
+      // Update the snapshot for the coin we're selling (fromCoin)
+      // Even though we're selling it, we still want to keep track of its max units
+      // for re-entry protection purposes
+      await this.updateCoinSnapshot(
+        bot, 
+        fromCoin, 
+        fromAsset.amount, // We track the amount we just sold
+        fromPrice, 
+        valueInETH
+      );
+      
+      // Update the snapshot for the coin we're buying (toCoin)
+      // This sets the new price point for future deviation calculations
+      await this.updateCoinSnapshot(
+        bot, 
+        toCoin, 
+        toAmount, 
+        toPrice, 
+        valueInETH
+      );
+      
+      // Track global peak value in ETH
+      if (!bot.globalPeakValueInETH || valueInETH > bot.globalPeakValueInETH) {
+        await bot.update({ globalPeakValueInETH: valueInETH });
+        await LogEntry.log(db, 'INFO', `Updated global peak ETH value to ${valueInETH}`, bot.id);
+      }
+
+      // Update current coin and accumulated commissions in the bot record
+      await bot.update({ 
+        currentCoin: toCoin,
+        totalCommissionsPaid: totalCommissionsPaid
+      });
+      
+      // Log the commission update
+      await LogEntry.log(db, 'INFO', `Added commission: ${commissionAmount.toFixed(8)} USDT, total: ${totalCommissionsPaid.toFixed(8)} USDT`, bot.id);
+      
+      // Create trade record for history
+      await Trade.create({
+        botId: bot.id,
+        fromCoin,
+        toCoin,
+        fromAmount: fromAsset.amount,
+        toAmount,
+        fromPrice,
+        toPrice,
+        timestamp: new Date(),
+        tradeId: `SIMULATED-${Date.now()}`
+      });
+      
+      return {
+        success: true,
+        tradeId: `SIMULATED-${Date.now()}`,
+        amount: toAmount,
+        priceChange
+      };
+    } catch (error) {
+      logMessage('ERROR', `Trade execution error: ${error.message}`, bot.name);
+      return {
+        success: false,
+        error: error.message
+      };
     }
   }
 
@@ -624,6 +833,96 @@ class BotService {
   }
   
   /**
+   * Convert a value in USDT to ETH equivalent
+   * @param {Object} bot - Bot instance
+   * @param {Number} usdtValue - Value in USDT
+   * @returns {Promise<Number>} - Value in ETH
+   */
+  async convertToETH(bot, usdtValue) {
+    try {
+      // Get the price service from the system
+      const priceService = require('./price.service');
+      
+      // Get the system and API configurations
+      const systemConfig = await db.systemConfig.findOne({ where: { active: true } });
+      const apiConfig = await db.apiConfig.findOne({ where: { userId: bot.userId } });
+      
+      if (!systemConfig || !apiConfig) {
+        throw new Error('Missing required configuration');
+      }
+      
+      // Get the current ETH price in USDT
+      const { price: ethPrice } = await priceService.getPrice(
+        systemConfig,
+        apiConfig,
+        'ETH',
+        'USDT',
+        bot.id
+      );
+      
+      // Convert USDT value to ETH
+      const ethValue = usdtValue / ethPrice;
+      return ethValue;
+    } catch (error) {
+      console.error(`Error converting to ETH: ${error.message}`);
+      // Return a safe default in case of error
+      return usdtValue / 3000; // Assume ETH is $3000 as fallback
+    }
+  }
+  
+  /**
+   * Update a coin's snapshot after acquiring or trading
+   * @param {Object} bot - Bot instance
+   * @param {String} coin - Coin symbol
+   * @param {Number} amount - Amount of coin held
+   * @param {Number} price - Current price in USDT
+   * @param {Number} valueInETH - ETH equivalent value
+   * @returns {Promise<Object>} - Updated or created snapshot
+   */
+  async updateCoinSnapshot(bot, coin, amount, price, valueInETH) {
+    try {
+      const CoinSnapshot = db.coinSnapshot;
+      
+      // Find or create the snapshot for this coin
+      const [snapshot, created] = await CoinSnapshot.findOrCreate({
+        where: { botId: bot.id, coin: coin },
+        defaults: {
+          initialPrice: price,
+          snapshotTimestamp: new Date(),
+          unitsHeld: amount,
+          ethEquivalentValue: valueInETH,
+          wasEverHeld: true,
+          maxUnitsReached: amount
+        }
+      });
+      
+      // If we're updating an existing snapshot, reset the price point
+      if (!created) {
+        await snapshot.update({
+          initialPrice: price,
+          snapshotTimestamp: new Date(),
+          unitsHeld: amount,
+          ethEquivalentValue: valueInETH,
+          wasEverHeld: true
+        });
+        
+        // Update maxUnitsReached if the new amount is higher
+        if (amount > snapshot.maxUnitsReached) {
+          await snapshot.update({
+            maxUnitsReached: amount
+          });
+        }
+      }
+      
+      logMessage('INFO', `Updated snapshot for ${coin}: price=${price}, units=${amount}`, bot.name);
+      return snapshot;
+    } catch (error) {
+      logMessage('ERROR', `Failed to update coin snapshot: ${error.message}`, bot.name);
+      throw error;
+    }
+  }
+  
+  /**
    * Process the allocation once we have a valid coin balance
    * @param {Object} bot - Bot instance
    * @param {Object} threeCommasClient - 3Commas client
@@ -691,6 +990,29 @@ class BotService {
           stablecoin: stablecoin // Add stablecoin information
         });
       }
+
+      // Calculate ETH equivalent value for snapshot tracking
+      // This is important for re-entry protection and global value tracking
+      const valueInETH = await this.convertToETH(bot, allocatedAmount * price);
+      
+      // Create or update the coin snapshot for the initial coin
+      // This sets the baseline for future deviation calculations
+      await this.updateCoinSnapshot(
+        bot,
+        initialCoin,
+        allocatedAmount,
+        price,
+        valueInETH
+      );
+      
+      // Also update the global peak value in ETH if necessary
+      if (!bot.globalPeakValueInETH || valueInETH > bot.globalPeakValueInETH) {
+        await bot.update({ globalPeakValueInETH: valueInETH });
+        logMessage('INFO', `Updated global peak ETH value to ${valueInETH}`, bot.name);
+      }
+      
+      // Update the bot's current coin to reflect the initialization
+      await bot.update({ currentCoin: initialCoin });
       
       logMessage('INFO', `Allocated ${allocatedAmount} ${initialCoin} (${allocatedAmount * price} ${stablecoin}) to bot`, bot.name);
       return botAsset;

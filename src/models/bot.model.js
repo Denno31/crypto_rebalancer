@@ -97,6 +97,23 @@ module.exports = (sequelize, Sequelize) => {
       defaultValue: 0.0,
       field: 'min_acceptable_value'
     },
+    globalPeakValueInETH: {
+      type: Sequelize.FLOAT,
+      defaultValue: 0.0,
+      field: 'global_peak_value_eth'
+    },
+    commissionRate: {
+      type: Sequelize.FLOAT,
+      field: 'commission_rate',
+      allowNull: false,
+      defaultValue: 0.002  // Default 0.2% commission
+    },
+    totalCommissionsPaid: {
+      type: Sequelize.FLOAT,
+      field: 'total_commissions_paid',
+      allowNull: false,
+      defaultValue: 0.0
+    },
     priceSource: {
       type: Sequelize.STRING,
       defaultValue: "three_commas",
