@@ -315,6 +315,12 @@ const migrations = [
         console.log('Could not remove columns: ', error.message);
       }
     }
+  },
+  {
+    id: '006_add_commission_fields_to_trades',
+    description: 'Add commission_rate and commission_amount columns to trades table',
+    up: require('./migrations/006_add_commission_fields_to_trades').up,
+    down: require('./migrations/006_add_commission_fields_to_trades').down
   }
 ];
 

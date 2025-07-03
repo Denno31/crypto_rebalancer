@@ -716,7 +716,7 @@ class BotService {
       // Log the commission update
       await LogEntry.log(db, 'INFO', `Added commission: ${commissionAmount.toFixed(8)} USDT, total: ${totalCommissionsPaid.toFixed(8)} USDT`, bot.id);
       
-      // Create trade record for history
+      // Create trade record for history with commission details
       await Trade.create({
         botId: bot.id,
         fromCoin,
@@ -725,7 +725,11 @@ class BotService {
         toAmount,
         fromPrice,
         toPrice,
-        timestamp: new Date(),
+        commissionRate: commissionRate,
+        commissionAmount: commissionAmount,
+        priceChange: deviation,
+        status: 'completed',
+        executed_at: new Date(),
         tradeId: `SIMULATED-${Date.now()}`
       });
       
