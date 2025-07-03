@@ -392,8 +392,9 @@ exports.getBotLogs = async (req, res) => {
     const level = req.query.level;
     const limit = parseInt(req.query.limit) || 100;
     
-    // Build query
-    const query = { botId };
+    // Build query - use snake_case 'bot_id' instead of camelCase 'botId'
+    // This matches the actual column name in the database
+    const query = { bot_id: botId };
     
     if (level) {
       query.level = level.toUpperCase();

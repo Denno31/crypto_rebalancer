@@ -510,7 +510,8 @@ class BotService {
       const valuationCurrency = targetCurrency || bot.preferredStablecoin || bot.referenceCoin || 'USDT';
       
       // Log which currency we're using for valuation
-      await LogEntry.log(db, 'INFO', `Calculating portfolio value in ${valuationCurrency}`, bot.id);
+      const botId = bot.id;
+      await LogEntry.log(db, 'INFO', `Calculating portfolio value in ${valuationCurrency}`, botId);
       
       // Get account balance
       const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
@@ -550,7 +551,8 @@ class BotService {
       // Calculate value
       return parseFloat(coinBalance.amount) * price;
     } catch (error) {
-      await LogEntry.log(db, 'ERROR', `Failed to calculate portfolio value: ${error.message}`, bot.id);
+      const botId = bot.id;
+      await LogEntry.log(db, 'ERROR', `Failed to calculate portfolio value: ${error.message}`, botId);
       throw error;
     }
   }
@@ -848,7 +850,8 @@ class BotService {
       const priceService = require('./price.service');
       
       // Get the system and API configurations
-      const systemConfig = await db.systemConfig.findOne({ where: { active: true } });
+    // Query by userId instead of 'active' since that field doesn't exist
+    const systemConfig = await db.systemConfig.findOne({ where: { userId: bot.userId } });
       const apiConfig = await db.apiConfig.findOne({ where: { userId: bot.userId } });
       
       if (!systemConfig || !apiConfig) {

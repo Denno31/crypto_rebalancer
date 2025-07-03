@@ -8,6 +8,7 @@ module.exports = (sequelize, Sequelize) => {
     botId: {
       type: Sequelize.INTEGER,
       allowNull: false,
+      field: 'bot_id',
       references: {
         model: 'bots',
         key: 'id'
@@ -19,27 +20,33 @@ module.exports = (sequelize, Sequelize) => {
     },
     initialPrice: {
       type: Sequelize.FLOAT,
-      allowNull: false
+      allowNull: false,
+      field: 'initial_price'
     },
     snapshotTimestamp: {
       type: Sequelize.DATE,
-      defaultValue: Sequelize.NOW
+      defaultValue: Sequelize.NOW,
+      field: 'snapshot_timestamp'
     },
     unitsHeld: {
       type: Sequelize.FLOAT,
-      defaultValue: 0.0
+      defaultValue: 0.0,
+      field: 'units_held'
     },
     ethEquivalentValue: {
       type: Sequelize.FLOAT,
-      defaultValue: 0.0
+      defaultValue: 0.0,
+      field: 'eth_equivalent_value'
     },
     wasEverHeld: {
       type: Sequelize.BOOLEAN,
-      defaultValue: false
+      defaultValue: false,
+      field: 'was_ever_held'
     },
     maxUnitsReached: {
       type: Sequelize.FLOAT,
-      defaultValue: 0.0
+      defaultValue: 0.0,
+      field: 'max_units_reached'
     }
   }, {
     tableName: 'coin_snapshots',
