@@ -359,6 +359,7 @@ class BotService {
         const deviation = (priceNow / priceThen) / currentDeviationRatio - 1;
         
         logMessage('INFO', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, bot.name);
+        await LogEntry.log(db, 'INFO', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, botId);
         
         // Estimate how many units we would get if we switched
         const newUnits = currentValueUSDT / priceNow;
@@ -366,6 +367,7 @@ class BotService {
         // Check if this coin's performance exceeds our threshold PLUS commission
         if (deviation > effectiveThreshold) {
           logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, bot.name);
+          await LogEntry.log(db, 'INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, botId);
           
           // Check re-entry rule - don't switch to a coin if we would get fewer units than max
           if (coinSnapshot.wasEverHeld && newUnits <= coinSnapshot.maxUnitsReached) {
@@ -390,17 +392,21 @@ class BotService {
         } else if (deviation > bot.thresholdPercentage / 100) {
           // This coin exceeds raw threshold but not after commission costs
           logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, bot.name);
+          await LogEntry.log(db, 'INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, botId);
         }
       }
       
       // Log eligible coins
       if (eligibleCoins.length > 0) {
         logMessage('INFO', `Found ${eligibleCoins.length} eligible coins for swap`, bot.name);
-        eligibleCoins.forEach(ec => {
+        await LogEntry.log(db, 'INFO', `Found ${eligibleCoins.length} eligible coins for swap`, botId);
+        eligibleCoins.forEach(async (ec) => {
           logMessage('INFO', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, bot.name);
+          await LogEntry.log(db, 'INFO', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, botId);
         });
       } else {
         logMessage('INFO', `No eligible coins found for swap`, bot.name);
+        await LogEntry.log(db, 'INFO', `No eligible coins found for swap`, botId);
       }
       
       // Check global profit protection if reference coin is set
@@ -417,6 +423,7 @@ class BotService {
           const minAcceptableValue = currentValue * (1 - (bot.globalThresholdPercentage / 100));
           await bot.update({ minAcceptableValue });
           logMessage('INFO', `Updated min acceptable value to ${minAcceptableValue}`, bot.name);
+          await LogEntry.log(db, 'INFO', `Updated min acceptable value to ${minAcceptableValue}`, botId);
         }
         
         // Check if trade would violate global profit protection
@@ -659,6 +666,8 @@ class BotService {
       // Log the commission details
       logMessage('INFO', `Commission: ${chalk.yellow(commissionAmount.toFixed(4))} USDT (${commissionRate * 100}%)`, bot.name);
       logMessage('INFO', `Total commissions paid: ${chalk.yellow(totalCommissionsPaid.toFixed(4))} USDT`, bot.name);
+      await LogEntry.log(db, 'INFO', `Commission: ${commissionAmount.toFixed(4)} USDT (${commissionRate * 100}%)`, bot.id);
+      await LogEntry.log(db, 'INFO', `Total commissions paid: ${totalCommissionsPaid.toFixed(4)} USDT`, bot.id);
       
       const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
       
