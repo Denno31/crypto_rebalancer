@@ -305,6 +305,31 @@ class BotService {
       const currentValueUSDT = currentAsset.amount * currentPrice;
       const currentValueInETH = await this.convertToETH(bot, currentValueUSDT);
       
+      // Fetch actual commission rates from the exchange if we have the account ID
+      if (bot.accountId && !bot._cachedCommissionRate) {
+        try {
+          logMessage('INFO', `Fetching actual commission rates from exchange for account ${bot.accountId}`, bot.name);
+          const [rateError, rateData] = await threeCommasClient.getExchangeCommissionRates(bot.accountId);
+          
+          if (!rateError && rateData) {
+            // For market orders, we use taker fee
+            const actualCommissionRate = rateData.takerRate;
+            
+            logMessage('INFO', `Actual commission rate from exchange: ${actualCommissionRate * 100}% (${rateData.source})`, bot.name);
+            await LogEntry.log(db, 'INFO', `Actual commission rate from exchange: ${actualCommissionRate * 100}% (${rateData.source})`, botId);
+            
+            // Cache the commission rate for this bot instance
+            bot._cachedCommissionRate = actualCommissionRate;
+          } else if (rateError) {
+            logMessage('WARNING', `Failed to get commission rates: ${rateError.message}. Using default: ${bot.commissionRate * 100}%`, bot.name);
+            await LogEntry.log(db, 'WARNING', `Failed to get commission rates: ${rateError.message}. Using default: ${bot.commissionRate * 100}%`, botId);
+          }
+        } catch (error) {
+          logMessage('WARNING', `Error fetching commission rates: ${error.message}`, bot.name);
+          await LogEntry.log(db, 'WARNING', `Error fetching commission rates: ${error.message}`, botId);
+        }
+      }
+      
       // Log current state
       logMessage('INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, bot.name);
       logMessage('INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, bot.name);
@@ -348,8 +373,14 @@ class BotService {
         const priceThen = coinSnapshot.initialPrice;
         
         // Calculate the relative deviation between this coin and current coin
-        // Get the commission rate (default to 0.2% if not set)
-        const commissionRate = bot.commissionRate || 0.002;
+        // Get the commission rate - either from the API, cache, or fallback to bot config
+        let commissionRate = bot.commissionRate || 0.002; // Default 0.2% as fallback
+        
+        // Use the cached dynamic commission rate if available
+        if (bot._cachedCommissionRate) {
+          commissionRate = bot._cachedCommissionRate;
+          logMessage('INFO', `Using cached commission rate: ${commissionRate * 100}%`, bot.name);
+        }
         
         // This is where we decide which coin to buy based on our deviation calculation
         // If we find a coin that exceeds our threshold PLUS commission costs, switch to it
@@ -613,8 +644,8 @@ class BotService {
   async executeTrade(bot, threeCommasClient, fromCoin, toCoin) {
     try {
       logMessage('INFO', `Executing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Executing trade: ${fromCoin} → ${toCoin}`, bot.id);
       
-      // Simulated trade execution (in a real scenario, this would interact with the exchange)
       // Find the asset we are selling
       const fromAsset = await BotAsset.findOne({
         where: {
@@ -627,7 +658,12 @@ class BotService {
         throw new Error(`No asset found for ${fromCoin}`);
       }
       
-      // Simulate getting the current price of both coins
+      // Get the account ID from the bot configuration
+      if (!bot.accountId) {
+        throw new Error('No 3Commas account ID configured for this bot');
+      }
+      
+      // Get system configuration for pricing
       const systemConfig = await SystemConfig.findOne({ where: { active: true } });
       const apiConfig = await ApiConfig.findOne({ where: { userId: bot.userId } });
       
@@ -652,18 +688,92 @@ class BotService {
         bot.id
       );
       
-      // Calculate how much of the target coin we'll get (accounting for commission)
+      // Calculate value and commission for our own tracking
       const fromValueUSDT = fromAsset.amount * fromPrice;
-      
-      // Apply commission rate from bot config (or use default)
       const commissionRate = bot.commissionRate || 0.002; // Default 0.2% if not configured
       const commissionAmount = fromValueUSDT * commissionRate;
       
-      // Calculate actual amount after commission is deducted
-      const netValueUSDT = fromValueUSDT - commissionAmount;
-      const toAmount = netValueUSDT / toPrice;
+      // Calculate price change percentage
+      const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
       
-      // Track the commission paid
+      // Calculate ETH equivalent value for global tracking
+      const valueInETH = await this.convertToETH(bot, fromValueUSDT);
+      
+      // Get the preferred stablecoin from the bot (or default to USDT)
+      const stablecoin = bot.preferredStablecoin || 'USDT';
+
+      // Log key information before executing trade
+      logMessage('INFO', `Trade amount: ${chalk.yellow(fromAsset.amount)} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.name);
+      logMessage('INFO', `Executing trade through 3Commas API...`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Trade amount: ${fromAsset.amount} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.id);
+      
+      // Use take profit settings if configured on the bot
+      const useTakeProfit = bot.useTakeProfit || false;
+      const takeProfitPercentage = bot.takeProfitPercentage || 2; // Default 2%
+      
+      // Check if we're in development/testing mode to use simulation
+      const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
+      const useSimulation = isDev || process.env.SIMULATE_TRADES === 'true';
+      
+      let tradeResult;
+      let tradeId;
+      
+      if (useSimulation) {
+        // Simulation mode - calculate amounts locally without calling 3Commas API
+        logMessage('INFO', `SIMULATION MODE: Simulating trade without calling 3Commas API`, bot.name);
+        await LogEntry.log(db, 'TRADE', `SIMULATION MODE: Simulating trade without calling 3Commas API`, bot.id);
+        
+        const netValueUSDT = fromValueUSDT - commissionAmount;
+        const toAmount = netValueUSDT / toPrice;
+        
+        tradeResult = {
+          success: true,
+          tradeId: `SIMULATED-${Date.now()}`,
+          status: 'completed',
+          amount: toAmount
+        };
+      } else {
+        // Real trading mode - call 3Commas API to execute the trade
+        logMessage('INFO', `Executing real trade via 3Commas API`, bot.name);
+        await LogEntry.log(db, 'TRADE', `Executing real trade via 3Commas API`, bot.id);
+        
+        // Call 3Commas API to execute the trade
+        const [error, response] = await threeCommasClient.executeTrade(
+          bot.accountId,
+          fromCoin,
+          toCoin,
+          fromAsset.amount,
+          useTakeProfit,
+          takeProfitPercentage
+        );
+        
+        if (error || !response) {
+          const errorMsg = error?.message || 'Unknown error executing trade with 3Commas API';
+          logMessage('ERROR', `3Commas trade execution failed: ${errorMsg}`, bot.name);
+          await LogEntry.log(db, 'ERROR', `3Commas trade execution failed: ${errorMsg}`, bot.id);
+          throw new Error(errorMsg);
+        }
+        
+        tradeResult = response;
+        tradeId = response.tradeId;
+        
+        // Log the successful API trade
+        logMessage('INFO', `3Commas trade executed successfully: ID ${tradeId}`, bot.name);
+        await LogEntry.log(db, 'TRADE', `3Commas trade executed successfully: ID ${tradeId}`, bot.id);
+        
+        // For market orders we can assume completion, but for other types we'd need to check status
+        if (response.status !== 'completed') {
+          logMessage('INFO', `Trade ${tradeId} status: ${response.status} - will proceed with DB updates`, bot.name);
+          await LogEntry.log(db, 'TRADE', `Trade ${tradeId} status: ${response.status}`, bot.id);
+        }
+      }
+      
+      // Calculate or use the amount received (from simulation or actual trade)
+      // This is an estimate for now if using real trading since 3Commas doesn't immediately return the amount
+      const netValueUSDT = fromValueUSDT - commissionAmount;
+      const toAmount = tradeResult.amount || netValueUSDT / toPrice;
+      
+      // Track commission details
       const totalCommissionsPaid = (bot.totalCommissionsPaid || 0) + commissionAmount;
       
       // Log the commission details
@@ -671,14 +781,6 @@ class BotService {
       logMessage('INFO', `Total commissions paid: ${chalk.yellow(totalCommissionsPaid.toFixed(4))} USDT`, bot.name);
       await LogEntry.log(db, 'INFO', `Commission: ${commissionAmount.toFixed(4)} USDT (${commissionRate * 100}%)`, bot.id);
       await LogEntry.log(db, 'INFO', `Total commissions paid: ${totalCommissionsPaid.toFixed(4)} USDT`, bot.id);
-      
-      const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
-      
-      // Get the preferred stablecoin from the bot (or default to USDT)
-      const stablecoin = bot.preferredStablecoin || 'USDT';
-      
-      // Calculate ETH equivalent value for global tracking
-      const valueInETH = await this.convertToETH(bot, fromValueUSDT);
       
       // Create a new asset for the coin we're buying
       const toAsset = await BotAsset.create({
@@ -695,10 +797,7 @@ class BotService {
       await fromAsset.destroy();
       
       // Update the snapshots using our dedicated helper method
-      
       // Update the snapshot for the coin we're selling (fromCoin)
-      // Even though we're selling it, we still want to keep track of its max units
-      // for re-entry protection purposes
       await this.updateCoinSnapshot(
         bot, 
         fromCoin, 
@@ -708,7 +807,6 @@ class BotService {
       );
       
       // Update the snapshot for the coin we're buying (toCoin)
-      // This sets the new price point for future deviation calculations
       await this.updateCoinSnapshot(
         bot, 
         toCoin, 
@@ -735,6 +833,7 @@ class BotService {
       // Create trade record for history with commission details
       await Trade.create({
         botId: bot.id,
+        userId: bot.userId,
         fromCoin,
         toCoin,
         fromAmount: fromAsset.amount,
@@ -743,20 +842,26 @@ class BotService {
         toPrice,
         commissionRate: commissionRate,
         commissionAmount: commissionAmount,
-        priceChange: deviation,
-        status: 'completed',
+        priceChange: priceChange, // Use the calculated price change
+        status: tradeResult.status || 'completed',
         executed_at: new Date(),
-        tradeId: `SIMULATED-${Date.now()}`
+        tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}` // Use the actual trade ID if available
       });
+      
+      logMessage('INFO', `Trade completed: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Trade completed: ${fromCoin} → ${toCoin}`, bot.id);
       
       return {
         success: true,
-        tradeId: `SIMULATED-${Date.now()}`,
+        tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}`,
         amount: toAmount,
-        priceChange
+        priceChange,
+        status: tradeResult.status || 'completed'
       };
     } catch (error) {
       logMessage('ERROR', `Trade execution error: ${error.message}`, bot.name);
+      await LogEntry.log(db, 'ERROR', `Trade execution error: ${error.message}`, bot.id);
+      
       return {
         success: false,
         error: error.message

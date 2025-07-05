@@ -110,35 +110,42 @@ class ThreeCommasService {
    */
   async getAvailableCoins(accountId) {
     try {
-      // Get account info to check available balances
-      const [error, accountData] = await this.request('accounts', accountId);
+      // Get account table data which contains detailed balance information
+      const [err, rows] = await this.request('accounts', `${accountId}/account_table_data`, {}, 'post');
       
-      if (error) {
-        console.error('Error fetching account data:', error);
-        return [error, null];
+      if (err) {
+        console.error('Error fetching account data:', err);
+        return [err, null];
       }
       
-      if (!accountData || !accountData.balances) {
+      // Check if we have any rows data
+      if (!rows || !Array.isArray(rows) || rows.length === 0) {
         return [{ error: 'No balances found in account data' }, null];
       }
       
-      // Filter for coins with non-zero balances and format for frontend
-      const availableCoins = accountData.balances
-        .filter(balance => parseFloat(balance.amount) > 0)
-        .map(balance => ({
-          coin: balance.currency_code,
-          name: balance.currency_name || balance.currency_code,
-          amount: parseFloat(balance.amount),
-          amountInUsd: parseFloat(balance.usd_value) || 0
+      // Format the rows into the expected format
+      // Filter for coins with non-zero balances
+      const availableCoins = rows
+        .filter(row => parseFloat(row.position) > 0)
+        .map(row => ({
+          coin: row.currency_code,
+          name: row.currency_name || row.currency_code,
+          amount: parseFloat(row.position),
+          amountInUsd: parseFloat(row.usd_value)
         }));
       
-      // Sort by USD value (highest first)
+      // Sort coins by USD value (highest first)
       availableCoins.sort((a, b) => b.amountInUsd - a.amountInUsd);
+      
+      // If we found no coins with balances
+      if (availableCoins.length === 0) {
+        return [{ error: 'No coins with balances found' }, null];
+      }
       
       return [null, availableCoins];
     } catch (error) {
       console.error('Error in getAvailableCoins:', error);
-      return [error, null];
+      return [{ error: error.message }, null];
     }
   }
   
@@ -234,6 +241,186 @@ class ThreeCommasService {
         },
         null
       ];
+    }
+  }
+
+  /**
+   * Execute a trade (swap) between two coins using 3Commas Smart Trade API
+   * @param {String} accountId - 3Commas account ID
+   * @param {String} fromCoin - Coin to sell (e.g. BTC)
+   * @param {String} toCoin - Coin to buy (e.g. ETH)
+   * @param {Number} amount - Amount to sell (in fromCoin units)
+   * @param {Boolean} useTakeProfit - Whether to use take profit (default: false)
+   * @param {Number} takeProfitPercentage - Take profit percentage if useTakeProfit is true
+   * @returns {Promise<Array>} - [error, tradeData]
+   */
+  async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2) {
+    try {
+      console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
+      
+      // Format the trading pair for 3Commas (BASE_TARGET format)
+      // For example, BTC_USDT means trading BTC for USDT
+      const pair = `${fromCoin}_${toCoin}`;
+      
+      // Prepare parameters for the smart trade
+      const params = {
+        account_id: accountId,
+        pair: pair,
+        position: {
+          type: 'buy',
+          units: {
+            value: amount.toString()
+          },
+          order_type: 'market' // Use market order for immediate execution
+        },
+        note: `Crypto Rebalancer Bot - Swap ${fromCoin} to ${toCoin}`
+      };
+      
+      // Add take profit settings if enabled
+      if (useTakeProfit && takeProfitPercentage > 0) {
+        params.take_profit = {
+          enabled: true,
+          steps: [
+            {
+              order_type: 'market',
+              price: {
+                type: 'percent',
+                value: takeProfitPercentage.toString()
+              },
+              volume: 100
+            }
+          ]
+        };
+      }
+      
+      // Execute the trade through 3Commas Smart Trade API
+      // https://github.com/3commas-io/3commas-official-api-docs/blob/master/smart_trades_api.md
+      const [error, response] = await this.request('smart_trades', 'create_smart_trade', params, 'post');
+      
+      if (error) {
+        console.error('Error executing trade:', error);
+        return [error, null];
+      }
+      
+      // The response contains details about the created smart trade
+      return [null, {
+        success: true,
+        tradeId: response.id,
+        status: response.status,
+        pair: response.pair,
+        createdAt: response.created_at,
+        raw: response
+      }];
+    } catch (error) {
+      console.error(`Error in executeTrade: ${error.message}`);
+      return [
+        {
+          code: 500,
+          message: `Failed to execute trade: ${error.message}`
+        },
+        null
+      ];
+    }
+  }
+  
+  /**
+   * Get trade status by ID from 3Commas
+   * @param {String|Number} tradeId - The 3Commas smart trade ID
+   * @returns {Promise<Array>} - [error, response]
+   */
+  async getTradeStatus(tradeId) {
+    try {
+      const [error, response] = await this.request('smart_trades', tradeId);
+      
+      if (error) {
+        return [error, null];
+      }
+      
+      return [null, {
+        tradeId: response.id,
+        status: response.status,
+        pair: response.pair,
+        profit: response.profit,
+        createdAt: response.created_at,
+        updatedAt: response.updated_at,
+        raw: response
+      }];
+    } catch (error) {
+      console.error(`Error in getTradeStatus: ${error.message}`);
+      return [{ message: error.message }, null];
+    }
+  }
+  
+  /**
+   * Get actual commission rates from the exchange via 3Commas
+   * @param {String|Number} accountId - The 3Commas account ID
+   * @returns {Promise<Array>} - [error, {makerRate, takerRate}]
+   */
+  async getExchangeCommissionRates(accountId) {
+    try {
+      // First get the account details to determine the exchange
+      const [accountError, account] = await this.request('accounts', accountId);
+      
+      if (accountError) {
+        return [accountError, null];
+      }
+      
+      // Default rates if we can't get the actual ones
+      const defaultRates = {
+        makerRate: 0.001, // 0.1%
+        takerRate: 0.002, // 0.2%
+        exchange: account.exchange_name || 'unknown'
+      };
+      
+      // Different exchanges expose commission rates differently or may not expose them via API
+      // We'll try to get them based on the exchange type
+      
+      // For market orders, we typically use taker fee
+      // For limit orders, we typically use maker fee
+      // We'll return both and let the caller decide which to use
+
+      // Different exchanges may require different API endpoints and parsing
+      // Here we'll add support for the most common exchanges
+      
+      try {
+        // For Binance (most common)
+        if (account.exchange_name === 'Binance' || account.exchange_name === 'BinanceUs') {
+          // Try to get fee info using account trades endpoint
+          // This endpoint is available in 3Commas but requires additional permissions
+          const [feeError, feeInfo] = await this.request('accounts', `${accountId}/fee_rates`);
+          
+          if (!feeError && feeInfo) {
+            return [null, {
+              makerRate: parseFloat(feeInfo.maker_fee) || defaultRates.makerRate,
+              takerRate: parseFloat(feeInfo.taker_fee) || defaultRates.takerRate,
+              exchange: account.exchange_name,
+              source: 'api'
+            }];
+          }
+        }
+        
+        // For other exchanges or if the above fails, try a general approach
+        // Some exchanges provide fee info in the account details
+        if (account.maker_fee && account.taker_fee) {
+          return [null, {
+            makerRate: parseFloat(account.maker_fee) || defaultRates.makerRate,
+            takerRate: parseFloat(account.taker_fee) || defaultRates.takerRate,
+            exchange: account.exchange_name,
+            source: 'account_info'
+          }];
+        }
+      } catch (innerError) {
+        console.log(`Warning: Error getting fee rates: ${innerError.message}`);
+        // Continue with defaults if this fails
+      }
+      
+      // Return default rates if we couldn't get actual rates
+      return [null, {
+        ...defaultRates,
+        source: 'default'
+      }];
+    } catch (error) {
+      return [{ message: `Failed to get commission rates: ${error.message}` }, null];
     }
   }
 }
