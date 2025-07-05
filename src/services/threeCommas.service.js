@@ -14,11 +14,24 @@ class ThreeCommasService {
    * Generate signature for 3commas API
    * @param {String} path - API path
    * @param {Object} params - Request parameters
+   * @param {String} method - HTTP method
    * @returns {String} - HMAC signature
    */
-  generateSignature(path, params = {}) {
-    const encodedParams = new URLSearchParams(params).toString();
-    const requestString = encodedParams ? `${path}?${encodedParams}` : path;
+  generateSignature(path, params = {}, method = 'get') {
+    let requestString = path;
+    
+    // For GET requests or simple objects, use URLSearchParams
+    if (method.toLowerCase() === 'get' || Object.keys(params).length === 0) {
+      const encodedParams = new URLSearchParams(params).toString();
+      requestString = encodedParams ? `${path}?${encodedParams}` : path;
+    } 
+    // For POST requests with complex objects, use JSON.stringify
+    else if (method.toLowerCase() === 'post') {
+      requestString = JSON.stringify(params);
+    }
+    
+    console.log(`Generating signature for: ${requestString}`);
+    
     return crypto
       .createHmac('sha256', this.apiSecret)
       .update(requestString)
@@ -44,7 +57,8 @@ class ThreeCommasService {
     
     const url = `${this.baseUrl}${path}`;
     
-    const signature = this.generateSignature(path, params);
+    // Pass the method to signature generation for proper handling
+    const signature = this.generateSignature(path, params, method);
     
     const headers = {
       'APIKEY': this.apiKey,
@@ -57,15 +71,24 @@ class ThreeCommasService {
 
     while (retries <= this.maxRetries) {
       try {
-        console.log(`Making request to ${url} with params:`, params);
-        
-        const response = await axios({
+        let axiosConfig = {
           method,
           url,
-          params,
           headers,
           timeout: this.requestTimeout
-        });
+        };
+
+        // For GET requests, use params
+        if (method.toLowerCase() === 'get') {
+          axiosConfig.params = params;
+        } 
+        // For POST requests, use data
+        else if (method.toLowerCase() === 'post') {
+          axiosConfig.data = params;
+        }
+
+        console.log(`Making ${method.toUpperCase()} request to ${url} with ${method.toLowerCase() === 'get' ? 'params' : 'data'}:`, params);
+        const response = await axios(axiosConfig);
         
         return [null, response.data];
       } catch (error) {
