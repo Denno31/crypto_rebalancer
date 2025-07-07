@@ -1,34 +1,90 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+// Define API versions like in Python implementation
+const API_VERSION_V1 = '/public/api/ver1/';
+const API_VERSION_V2 = '/public/api/v2/';
+
+// Define entities that use V2 API
+const API_VERSION_V2_ENTITIES = [
+  'smart_trades_v2',
+  'grid_bots_v2',
+];
+
+// Map API methods to HTTP methods and paths - matching Python implementation
+const API_METHODS = {
+  // For smart_trades_v2, the endpoints follow different patterns than v1
+  // Based on 3commas API docs: https://github.com/3commas-io/3commas-official-api-docs/blob/master/smart_trades_v2_api.md
+  smart_trades_v2: {
+    'new': ['POST', 'smart_trades'],    // This creates a new trade via the v1 endpoint
+    'get_by_id': ['GET', '{id}'],       // Get trade by ID 
+    'update': ['PATCH', '{id}'],        // Update trade
+    'cancel': ['DELETE', '{id}'],        // Cancel trade
+    '': ['GET', '']                      // Get all trades
+  }
+};
+
 class ThreeCommasService {
   constructor(apiKey, apiSecret, options = {}) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
-    this.baseUrl = 'https://api.3commas.io';
-    this.requestTimeout = options.requestTimeout || 10000;
-    this.maxRetries = options.maxRetries || 1;
+    this.baseUrl = options.baseUrl || 'https://api.3commas.io';
+    this.timeout = options.timeout || 30000;
+    this.maxRetries = options.maxRetries || 3;
   }
 
   /**
-   * Generate signature for 3commas API
+   * Python-style signature generation to match the py3cw library
+   * @param {String} path - API path
+   * @param {String} data - JSON stringified data or empty string
+   * @returns {String} - HMAC signature
+   * @private
+   */
+  __generateSignaturePython(path, data = '') {
+    // This matches exactly how py3cw generates signatures
+    // Using the path + data string
+    const message = Buffer.from(path + data);
+    const key = Buffer.from(this.apiSecret);
+    
+    const signature = crypto
+      .createHmac('sha256', key)
+      .update(message)
+      .digest('hex');
+    
+    console.log(`Python-style signature for path: ${path}, data length: ${data.length}`);
+    
+    return signature;
+  }
+  
+  /**
+   * Original signature generation method (keeping for compatibility)
    * @param {String} path - API path
    * @param {Object} params - Request parameters
    * @param {String} method - HTTP method
+   * @param {Boolean} isJsonBody - Whether body is JSON format
    * @returns {String} - HMAC signature
    */
-  generateSignature(path, params = {}, method = 'get') {
+  generateSignature(path, params = {}, method = 'get', isJsonBody = true) {
+    // According to 3Commas official documentation:
+    // 1. For GET requests: Sign the path + query string
+    // 2. For POST with form-urlencoded: Sign the path + query string
+    // 3. For POST with JSON body: For simple trades, sign the path + JSON stringified body
+    
     let requestString = path;
     
-    // For GET requests or simple objects, use URLSearchParams
-    if (method.toLowerCase() === 'get' || Object.keys(params).length === 0) {
+    // For GET requests or POST with form data
+    if (method.toLowerCase() === 'get' || !isJsonBody) {
       const encodedParams = new URLSearchParams(params).toString();
-      requestString = encodedParams ? `${path}?${encodedParams}` : path;
-    } 
-    // For POST requests with complex objects, use JSON.stringify
-    else if (method.toLowerCase() === 'post') {
-      requestString = JSON.stringify(params);
+      if (encodedParams) {
+        requestString = `${path}?${encodedParams}`;
+      }
     }
+    // For POST with JSON body (handle special case for smart trades)
+    else if (isJsonBody && path.includes('smart_trades')) {
+      // Special handling for smart trades - includes path + JSON data
+      requestString = path + JSON.stringify(params);
+    }
+    // For other POST with JSON, just use path
     
     console.log(`Generating signature for: ${requestString}`);
     
@@ -47,23 +103,65 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, data]
    */
   async request(entity, action = '', params = {}, method = 'get') {
-    // Format the path properly
-    let path;
-    if (action) {
-      path = `/public/api/ver1/${entity}/${action}`.replace(/\/+$/, '');
+    // Check if this entity+action is in our API methods mapping (like Python)
+    let httpMethod = method.toUpperCase();
+    let apiPath = '';
+    let apiVersion;
+    let entityPath = entity;
+    
+    // If we have a mapping for this entity/action, use it
+    if (API_METHODS[entity] && API_METHODS[entity][action]) {
+      [httpMethod, apiPath] = API_METHODS[entity][action];
+    }
+    
+    // Handle action_id replacements (like Python implementation)
+    if (action && !isNaN(action)) {
+      // If action is a number, it's an ID
+      apiPath = apiPath.replace('{id}', action);
+    }
+    
+    // Determine API version based on entity type (like Python implementation)
+    if (API_VERSION_V2_ENTITIES.includes(entity)) {
+      apiVersion = API_VERSION_V2;
+      entityPath = entity.replace('_v2', ''); // Remove _v2 suffix for path
     } else {
-      path = `/public/api/ver1/${entity}`.replace(/\/+$/, '');
+      apiVersion = API_VERSION_V1;
+    }
+    
+    // Format the path properly based on API mapping
+    let path;
+    if (apiPath && apiPath.startsWith('/')) {
+      // If apiPath starts with /, use it as a full path after API version
+      path = `${apiVersion}${apiPath}`.replace(/\/+$/, '');
+    } else if (apiPath) {
+      // Otherwise combine with entity path
+      path = `${apiVersion}${entityPath}/${apiPath}`.replace(/\/+$/, '');
+    } else if (action && isNaN(action)) {
+      path = `${apiVersion}${entityPath}/${action}`.replace(/\/+$/, '');
+    } else if (action) {
+      // It's an ID
+      path = `${apiVersion}${entityPath}/${action}`.replace(/\/+$/, '');
+    } else {
+      path = `${apiVersion}${entityPath}`.replace(/\/+$/, '');
     }
     
     const url = `${this.baseUrl}${path}`;
     
-    // Pass the method to signature generation for proper handling
-    const signature = this.generateSignature(path, params, method);
+    // For GET with params, add them to the URL (like Python implementation)
+    const isGetWithPayload = httpMethod === 'GET' && params && Object.keys(params).length > 0;
+    
+    // Determine content type based on request type
+    const isJsonBody = httpMethod === 'POST' && Object.keys(params).length > 0;
+    const contentType = isJsonBody ? 'application/json' : 'application/x-www-form-urlencoded';
+    
+    // Generate signature - using same approach as Python implementation
+    const dataString = isJsonBody ? JSON.stringify(params) : '';
+    const signature = this.__generateSignaturePython(path, dataString);
     
     const headers = {
       'APIKEY': this.apiKey,
       'Signature': signature,
-      'Content-Type': 'application/json'
+      'Content-Type': contentType
     };
 
     let retries = 0;
@@ -72,22 +170,32 @@ class ThreeCommasService {
     while (retries <= this.maxRetries) {
       try {
         let axiosConfig = {
-          method,
+          method: httpMethod,  // Use the resolved HTTP method
           url,
           headers,
-          timeout: this.requestTimeout
+          timeout: this.timeout
         };
 
-        // For GET requests, use params
-        if (method.toLowerCase() === 'get') {
-          axiosConfig.params = params;
+        // For GET requests with params, encode as URL params
+        if (isGetWithPayload) {
+          // URL encode params for GET requests
+          const searchParams = new URLSearchParams();
+          Object.entries(params).forEach(([key, value]) => {
+            searchParams.append(key, value);
+          });
+          const queryString = searchParams.toString();
+          axiosConfig.url = `${url}?${queryString}`;
         } 
-        // For POST requests, use data
-        else if (method.toLowerCase() === 'post') {
+        // For POST requests with JSON body
+        else if (isJsonBody) {
           axiosConfig.data = params;
         }
+        // For POST requests without JSON body (empty body)
+        else if (httpMethod === 'POST') {
+          axiosConfig.data = {};
+        }
 
-        console.log(`Making ${method.toUpperCase()} request to ${url} with ${method.toLowerCase() === 'get' ? 'params' : 'data'}:`, params);
+        console.log(`Making ${httpMethod} request to ${axiosConfig.url || url} with ${isGetWithPayload || httpMethod !== 'POST' ? 'params' : 'data'}:`, params);
         const response = await axios(axiosConfig);
         
         return [null, response.data];
@@ -95,16 +203,18 @@ class ThreeCommasService {
         console.error(`Error in 3Commas request to ${url}:`, error.response?.data || error.message);
         lastError = {
           code: error.response?.status || 500,
-          message: error.response?.data?.error || error.message
+          message: error.response?.data?.error || error.response?.data?.error_description || error.message
         };
-        retries++;
-        
-        if (retries <= this.maxRetries) {
-          // Wait exponentially longer between retries
-          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+
+        if (retries >= this.maxRetries) {
+          return [lastError, null];
         }
+
+        retries++;
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, 1000 * retries));
       }
-    }
+    }  
     
     return [lastError, null];
   }
@@ -272,43 +382,45 @@ class ThreeCommasService {
    * @param {String} accountId - 3Commas account ID
    * @param {String} fromCoin - Coin to sell (e.g. BTC)
    * @param {String} toCoin - Coin to buy (e.g. ETH)
-   * @param {Number} amount - Amount to sell (in fromCoin units)
-   * @param {Boolean} useTakeProfit - Whether to use take profit (default: false)
-   * @param {Number} takeProfitPercentage - Take profit percentage if useTakeProfit is true
+   * @param {Number} amount - Amount of fromCoin to sell
+   * @param {Boolean} useTakeProfit - Whether to use take profit
+   * @param {Number} takeProfitPercentage - Take profit percentage
    * @returns {Promise<Array>} - [error, tradeData]
    */
   async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2) {
     try {
-      console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
+      // Ensure account ID is a string
+      accountId = String(accountId);
       
-      // Format the trading pair for 3Commas (BASE_TARGET format)
-      // For example, BTC_USDT means trading BTC for USDT
+      // Format trading pair - 3Commas expects BASE_QUOTE format
+      // Example: BTC_USDT means buy/sell BTC with USDT
       const pair = `${fromCoin}_${toCoin}`;
       
-      // Prepare parameters for the smart trade
-      const params = {
+      console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
+      
+      // Use a simpler approach for API v1 - this matches how the Python implementation works
+      const payload = {
         account_id: accountId,
-        pair: pair,
+        pair,
         position: {
           type: 'buy',
           units: {
-            value: amount.toString()
+            value: String(amount)
           },
-          order_type: 'market' // Use market order for immediate execution
-        },
-        note: `Crypto Rebalancer Bot - Swap ${fromCoin} to ${toCoin}`
+          order_type: 'market'
+        }
       };
       
       // Add take profit settings if enabled
       if (useTakeProfit && takeProfitPercentage > 0) {
-        params.take_profit = {
+        payload.take_profit = {
           enabled: true,
           steps: [
             {
               order_type: 'market',
               price: {
                 type: 'percent',
-                value: takeProfitPercentage.toString()
+                value: String(takeProfitPercentage)
               },
               volume: 100
             }
@@ -316,16 +428,19 @@ class ThreeCommasService {
         };
       }
       
-      // Execute the trade through 3Commas Smart Trade API
-      // https://github.com/3commas-io/3commas-official-api-docs/blob/master/smart_trades_api.md
-      const [error, response] = await this.request('smart_trades', 'create_smart_trade', params, 'post');
+      // Use the v1 API with create_smart_trade action - this is what works in Python
+      const [error, response] = await this.request(
+        'smart_trades', 
+        'create_smart_trade',
+        payload, 
+        'post'
+      );
       
       if (error) {
         console.error('Error executing trade:', error);
         return [error, null];
       }
       
-      // The response contains details about the created smart trade
       return [null, {
         success: true,
         tradeId: response.id,
@@ -353,7 +468,8 @@ class ThreeCommasService {
    */
   async getTradeStatus(tradeId) {
     try {
-      const [error, response] = await this.request('smart_trades', tradeId);
+      // Use smart_trades_v2 API to match the Python implementation
+      const [error, response] = await this.request('smart_trades_v2', tradeId);
       
       if (error) {
         return [error, null];
