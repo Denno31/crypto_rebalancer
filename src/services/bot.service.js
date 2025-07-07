@@ -1,6 +1,7 @@
 const db = require('../models');
 const ThreeCommasService = require('./threeCommas.service');
 const priceService = require('./price.service');
+const assetManager = require('./assetManager.service');
 const chalk = require('chalk');
 const Bot = db.bot;
 const ApiConfig = db.apiConfig;
@@ -10,6 +11,7 @@ const Trade = db.trade;
 const LogEntry = db.logEntry;
 const CoinUnitTracker = db.coinUnitTracker;
 const BotAsset = db.botAsset;
+const AssetLock = db.assetLock;
 
 /**
  * Format and print a log message with timestamp, level, and bot info
@@ -642,9 +644,12 @@ class BotService {
    * @returns {Promise<Object>} - Trade result
    */
   async executeTrade(bot, threeCommasClient, fromCoin, toCoin) {
+    // Initialize asset lock variable
+    let assetLock = null;
+    
     try {
-      logMessage('INFO', `Executing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
-      await LogEntry.log(db, 'TRADE', `Executing trade: ${fromCoin} → ${toCoin}`, bot.id);
+      logMessage('INFO', `Preparing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Preparing trade: ${fromCoin} → ${toCoin}`, bot.id);
       
       // Find the asset we are selling
       const fromAsset = await BotAsset.findOne({
@@ -662,6 +667,38 @@ class BotService {
       if (!bot.accountId) {
         throw new Error('No 3Commas account ID configured for this bot');
       }
+      
+      // Check if the assets can be traded (not locked by other bots)
+      const assetCheck = await assetManager.canTradeAsset(bot.id, fromCoin, fromAsset.amount);
+      if (!assetCheck.canTrade) {
+        logMessage('WARNING', `Cannot trade ${fromCoin}: ${assetCheck.reason}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Trade rejected: ${assetCheck.reason}`, bot.id);
+        throw new Error(`Cannot trade ${fromCoin}: ${assetCheck.reason}`);
+      }
+      
+      // Acquire a lock on the assets being traded
+      const lockResult = await assetManager.lockAssets(
+        bot.id, 
+        fromCoin, 
+        fromAsset.amount, 
+        `trade_to_${toCoin}`, 
+        5 // Lock for 5 minutes
+      );
+      
+      if (!lockResult.success) {
+        logMessage('WARNING', `Failed to lock ${fromCoin} for trading: ${lockResult.error}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Trade rejected: ${lockResult.error}`, bot.id);
+        throw new Error(`Failed to lock ${fromCoin} for trading: ${lockResult.error}`);
+      }
+      
+      // Store lock ID for later release
+      assetLock = {
+        id: lockResult.lockId,
+        botId: bot.id
+      };
+      
+      logMessage('INFO', `Executing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Executing trade: ${fromCoin} → ${toCoin}`, bot.id);
       
       // Get system configuration for pricing
       const systemConfig = await SystemConfig.findOne({ where: { active: true } });
@@ -851,6 +888,12 @@ class BotService {
       logMessage('INFO', `Trade completed: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
       await LogEntry.log(db, 'TRADE', `Trade completed: ${fromCoin} → ${toCoin}`, bot.id);
       
+      // Release the asset lock
+      if (assetLock) {
+        await assetManager.releaseLock(assetLock.id, assetLock.botId);
+        assetLock = null;
+      }
+      
       return {
         success: true,
         tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}`,
@@ -861,6 +904,15 @@ class BotService {
     } catch (error) {
       logMessage('ERROR', `Trade execution error: ${error.message}`, bot.name);
       await LogEntry.log(db, 'ERROR', `Trade execution error: ${error.message}`, bot.id);
+      
+      // Always release lock if we have one, even on failure
+      if (assetLock) {
+        try {
+          await assetManager.releaseLock(assetLock.id, assetLock.botId);
+        } catch (lockError) {
+          logMessage('ERROR', `Failed to release asset lock: ${lockError.message}`, bot.name);
+        }
+      }
       
       return {
         success: false,
@@ -1223,6 +1275,119 @@ class BotService {
     } catch (error) {
       // Log error but don't throw - this is a non-critical feature
       logMessage('ERROR', `Failed to store coin deviation data: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Reconcile bot-tracked balances with actual exchange balances
+   * @param {Number} botId - Bot ID
+   * @param {Object} threeCommasClient - 3Commas client instance
+   * @returns {Promise<Object>} - Reconciliation results with discrepancies
+   */
+  async reconcileBalances(botId, threeCommasClient) {
+    try {
+      // Get bot information
+      const bot = await Bot.findByPk(botId);
+      if (!bot) {
+        throw new Error(`Bot with ID ${botId} not found`);
+      }
+      
+      // Get bot's tracked assets
+      const botAssets = await BotAsset.findAll({
+        where: { botId }
+      });
+      
+      if (botAssets.length === 0) {
+        logMessage('WARNING', `Bot ${bot.name} has no tracked assets`, bot.name);
+        return { success: true, discrepancies: [], message: 'No tracked assets found' };
+      }
+      
+      // Get actual account balances from exchange
+      const accountBalances = await threeCommasClient.getAccountTableData(bot.accountId);
+      if (!accountBalances || !accountBalances.length) {
+        throw new Error('Failed to retrieve account balances from exchange');
+      }
+      
+      // Convert exchange balances to a map for easier lookup
+      const exchangeBalanceMap = {};
+      accountBalances.forEach(balance => {
+        exchangeBalanceMap[balance.coin] = {
+          amount: parseFloat(balance.amount),
+          usdtValue: parseFloat(balance.amountInUsd)
+        };
+      });
+      
+      // Compare bot-tracked assets with exchange balances
+      const discrepancies = [];
+      botAssets.forEach(asset => {
+        const exchangeBalance = exchangeBalanceMap[asset.coin];
+        
+        if (!exchangeBalance) {
+          // Coin tracked by bot not found in exchange
+          discrepancies.push({
+            coin: asset.coin,
+            botTracked: asset.amount,
+            exchange: 0,
+            difference: -asset.amount,
+            severity: 'HIGH',
+            message: `Bot tracks ${asset.amount} ${asset.coin}, but none found in exchange`
+          });
+        } else if (Math.abs(asset.amount - exchangeBalance.amount) > 0.00001) { // Small epsilon for floating point comparison
+          // Balance discrepancy found
+          const difference = exchangeBalance.amount - asset.amount;
+          const percentDiff = (difference / asset.amount) * 100;
+          
+          // Determine severity based on percentage difference
+          let severity = 'LOW';
+          if (Math.abs(percentDiff) > 10) {
+            severity = 'HIGH';
+          } else if (Math.abs(percentDiff) > 2) {
+            severity = 'MEDIUM';
+          }
+          
+          discrepancies.push({
+            coin: asset.coin,
+            botTracked: asset.amount,
+            exchange: exchangeBalance.amount,
+            difference: difference.toFixed(8),
+            percentDifference: percentDiff.toFixed(2) + '%',
+            severity,
+            message: `Balance mismatch for ${asset.coin}: Bot tracks ${asset.amount}, exchange has ${exchangeBalance.amount}`
+          });
+        }
+      });
+      
+      // Check for coins in exchange that bot should be tracking (based on its coin list)
+      const botCoinList = bot.getCoinsArray();
+      const botTrackedCoinSet = new Set(botAssets.map(asset => asset.coin));
+      
+      botCoinList.forEach(coin => {
+        if (!botTrackedCoinSet.has(coin) && exchangeBalanceMap[coin] && exchangeBalanceMap[coin].amount > 0) {
+          discrepancies.push({
+            coin: coin,
+            botTracked: 0,
+            exchange: exchangeBalanceMap[coin].amount,
+            difference: exchangeBalanceMap[coin].amount,
+            severity: 'MEDIUM',
+            message: `Exchange has ${exchangeBalanceMap[coin].amount} ${coin} not tracked by bot, but in bot's coin list`
+          });
+        }
+      });
+      
+      // Log reconciliation results
+      if (discrepancies.length > 0) {
+        logMessage('WARNING', `Found ${discrepancies.length} balance discrepancies for bot ${bot.name}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Found ${discrepancies.length} balance discrepancies`, botId);
+      } else {
+        logMessage('INFO', `Bot ${bot.name} balances reconciled successfully with exchange`, bot.name);
+      }
+      
+      return { success: true, discrepancies, message: discrepancies.length > 0 ? 'Discrepancies found' : 'All balances match' };
+      
+    } catch (error) {
+      logMessage('ERROR', `Balance reconciliation failed: ${error.message}`);
+      await LogEntry.log(db, 'ERROR', `Balance reconciliation failed: ${error.message}`, botId);
+      return { success: false, error: error.message };
     }
   }
 }

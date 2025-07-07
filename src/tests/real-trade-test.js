@@ -227,12 +227,14 @@ async function testRealTrade() {
     // For testing, we'll use a minimal amount regardless of budget settings
     // This is to ensure trades are small and safe during testing
     tradeAmount = config.minimalTradeAmount || 0.0001;
-    
+    console.log({tradeAmount})
     // If in production and not simulating, we would use the bot's actual budget settings:
     if (!simulate && process.env.NODE_ENV === 'production') {
+      
       if (manualBudgetAmount > 0.1 && config.fromCoin !== 'USDT') {
         // Convert manual budget from USDT to fromCoin units
-        const fromCoinPriceInUSDT = fromCoinBalance.usd_value / availableAmount;
+        console.log(fromCoinBalance)
+        const fromCoinPriceInUSDT = fromCoinBalance.amountInUsd / availableAmount;
         const allocatedBudget = manualBudgetAmount * (allocationPercentage / 100);
         tradeAmount = Math.min(allocatedBudget / fromCoinPriceInUSDT, availableAmount * 0.1);
         console.log(chalk.blue(`Using actual budget allocation: ${allocatedBudget} USDT`));
@@ -244,7 +246,9 @@ async function testRealTrade() {
     }
     
     // For safety in testing, cap at a small amount
+  
     tradeAmount = Math.min(tradeAmount, config.minimalTradeAmount || 0.0001);
+  
     
     if (tradeAmount <= 0 || isNaN(tradeAmount)) {
       throw new Error(`Invalid trade amount calculated: ${tradeAmount}`);

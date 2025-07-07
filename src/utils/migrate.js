@@ -411,6 +411,82 @@ const migrations = [
         throw error;
       }
     }
+  },
+  {
+    id: '008_create_asset_locks_table',
+    description: 'Create asset_locks table for managing asset ownership in shared wallets',
+    up: async (queryInterface) => {
+      console.log('Creating asset_locks table...');
+      try {
+        await queryInterface.createTable('asset_locks', {
+          id: {
+            type: DataTypes.INTEGER,
+            primaryKey: true,
+            autoIncrement: true
+          },
+          bot_id: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            references: {
+              model: 'bots',
+              key: 'id'
+            },
+            onDelete: 'CASCADE'
+          },
+          coin: {
+            type: DataTypes.STRING,
+            allowNull: false
+          },
+          amount: {
+            type: DataTypes.FLOAT,
+            allowNull: false,
+            defaultValue: 0.0
+          },
+          status: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: 'locked' // locked, released
+          },
+          reason: {
+            type: DataTypes.STRING,
+            allowNull: true
+          },
+          expires_at: {
+            type: DataTypes.DATE,
+            allowNull: false
+          },
+          created_at: {
+            type: DataTypes.DATE,
+            allowNull: false,
+            defaultValue: Sequelize.fn('NOW')
+          },
+          updated_at: {
+            type: DataTypes.DATE,
+            allowNull: false,
+            defaultValue: Sequelize.fn('NOW')
+          }
+        });
+        
+        // Create indexes for faster lookups
+        await queryInterface.addIndex('asset_locks', ['bot_id', 'coin']);
+        await queryInterface.addIndex('asset_locks', ['status', 'expires_at']);
+        
+        console.log('asset_locks table created successfully');
+      } catch (error) {
+        console.error('Error creating asset_locks table:', error);
+        throw error;
+      }
+    },
+    down: async (queryInterface) => {
+      console.log('Dropping asset_locks table...');
+      try {
+        await queryInterface.dropTable('asset_locks');
+        console.log('asset_locks table dropped successfully');
+      } catch (error) {
+        console.error('Error dropping asset_locks table:', error);
+        throw error;
+      }
+    }
   }
 ];
 

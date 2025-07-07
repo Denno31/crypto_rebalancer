@@ -43,6 +43,10 @@ class ThreeCommasService {
   __generateSignaturePython(path, data = '') {
     // This matches exactly how py3cw generates signatures
     // Using the path + data string
+    if (!path) {
+      console.error('Path is undefined in signature generation');
+      return '';
+    }
     const message = Buffer.from(path + data);
     const key = Buffer.from(this.apiSecret);
     
@@ -385,9 +389,10 @@ class ThreeCommasService {
    * @param {Number} amount - Amount of fromCoin to sell
    * @param {Boolean} useTakeProfit - Whether to use take profit
    * @param {Number} takeProfitPercentage - Take profit percentage
+   * @param {String} mode - Trading mode ('live' or 'paper')
    * @returns {Promise<Array>} - [error, tradeData]
    */
-  async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2) {
+  async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2, mode = 'live') {
     try {
       // Ensure account ID is a string
       accountId = String(accountId);
@@ -399,6 +404,13 @@ class ThreeCommasService {
       console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
       
       // Use a simpler approach for API v1 - this matches how the Python implementation works
+      // Check if we're using paper/demo trading mode
+      const isPaperTrading = mode === 'paper';
+      
+      if (isPaperTrading) {
+        console.log('⚠️ Using PAPER TRADING mode - no real funds will be used');
+      }
+      
       const payload = {
         account_id: accountId,
         pair,
@@ -408,7 +420,8 @@ class ThreeCommasService {
             value: String(amount)
           },
           order_type: 'market'
-        }
+        },
+        demo: isPaperTrading // Set demo flag for paper trading
       };
       
       // Add take profit settings if enabled
