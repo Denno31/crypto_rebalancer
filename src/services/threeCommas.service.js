@@ -247,6 +247,7 @@ class ThreeCommasService {
    */
   async getAvailableCoins(accountId) {
     try {
+      console.log(`Fetching available coins for account ${accountId}`);
       // Get account table data which contains detailed balance information
       const [err, rows] = await this.request('accounts', `${accountId}/account_table_data`, {}, 'post');
       
