@@ -1,15 +1,22 @@
+// Load environment variables from .env file
+require('dotenv').config();
+// Convert environment variables to an object
+const envVars = Object.keys(process.env).reduce((env, key) => {
+  env[key] = process.env[key];
+  return env;
+}, {});
+
 module.exports = {
   apps: [{
     name: "crypto-rebalancer-api",
     script: "./src/server.js",
     env: {
       NODE_ENV: "development",
-      // Environment variables will be loaded from .env file with --env-from-file option
-      // or can be defined here for development environment
+      ...envVars  // Spread all environment variables
     },
     env_production: {
-      NODE_ENV: "production",
-      // Production-specific variables can be defined here
+      NODE_ENV: "production"
+      // Production variables will be loaded at runtime
     }
   },
   {
@@ -17,12 +24,11 @@ module.exports = {
     script: "./src/scripts/runBot.js",
     env: {
       NODE_ENV: "development",
-      // Environment variables will be loaded from .env file with --env-from-file option
-      // or can be defined here for development environment
+      ...envVars  // Spread all environment variables 
     },
     env_production: {
-      NODE_ENV: "production",
-      // Production-specific variables can be defined here
+      NODE_ENV: "production"
+      // Production variables will be loaded at runtime
     },
     // Bot-specific settings
     autorestart: true,
