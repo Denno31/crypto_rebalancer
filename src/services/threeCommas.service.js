@@ -107,6 +107,17 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, data]
    */
   async request(entity, action = '', params = {}, method = 'get') {
+    // Log partial API key for debugging (only first 4 and last 4 characters)
+    if (this.apiKey && this.apiKey.length > 8) {
+      const visiblePrefix = this.apiKey.substring(0, 4);
+      const visibleSuffix = this.apiKey.substring(this.apiKey.length - 4);
+      const maskedPortion = '*'.repeat(Math.max(0, this.apiKey.length - 8));
+      console.log(`Using API key: ${visiblePrefix}${maskedPortion}${visibleSuffix}`);
+    } else if (this.apiKey) {
+      console.log(`Using API key: ${this.apiKey.substring(0, 2)}****`);
+    } else {
+      console.log('API key is not defined!');
+    }
     // Check if this entity+action is in our API methods mapping (like Python)
     let httpMethod = method.toUpperCase();
     let apiPath = '';
@@ -394,6 +405,18 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, tradeData]
    */
   async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2, mode = 'live') {
+    console.log('Executing trade with API credentials:');
+    // Log partial API key for debugging (only first 4 and last 4 characters)
+    if (this.apiKey && this.apiKey.length > 8) {
+      const visiblePrefix = this.apiKey.substring(0, 4);
+      const visibleSuffix = this.apiKey.substring(this.apiKey.length - 4);
+      const maskedPortion = '*'.repeat(Math.max(0, this.apiKey.length - 8));
+      console.log(`API key: ${visiblePrefix}${maskedPortion}${visibleSuffix}`);
+    } else if (this.apiKey) {
+      console.log(`API key: ${this.apiKey.substring(0, 2)}****`);
+    } else {
+      console.log('API key is not defined!');
+    }
     try {
       // Ensure account ID is a string
       accountId = String(accountId);
