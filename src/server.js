@@ -19,8 +19,13 @@ const db = require('./models');
 // Initialize Express app
 const app = express();
 
-// Set port
+// Set port - Digital Ocean typically provides a PORT environment variable
+// For local development, use 3000, but cloud platforms will specify their own
 const PORT = process.env.PORT || 3000;
+console.log(`Server configured to use port: ${PORT}`);
+
+// For deployment platforms that might need this info
+const HOST = process.env.HOST || '0.0.0.0'; // Use 0.0.0.0 to bind to all available network interfaces
 
 // Middleware
 app.use(cors());
@@ -49,8 +54,8 @@ db.sequelize.authenticate()
   .then(() => {
     console.log('Database connection established successfully');
     
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`Server is running on ${HOST}:${PORT}`);
     });
   })
   .catch(err => {
