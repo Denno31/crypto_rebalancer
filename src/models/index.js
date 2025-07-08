@@ -34,6 +34,9 @@ db.logEntry = require('./logEntry.model.js')(sequelize, Sequelize);
 db.systemConfig = require('./systemConfig.model.js')(sequelize, Sequelize);
 db.coinUnitTracker = require('./coinUnitTracker.model.js')(sequelize, Sequelize);
 db.coinSnapshot = require('./coinSnapshot.model.js')(sequelize, Sequelize);
+db.botAsset = require('./botAsset.model.js')(sequelize, Sequelize);
+db.coinDeviation = require('./coinDeviation.model.js')(sequelize, Sequelize);
+db.assetLock = require('./assetLock.model.js')(sequelize, Sequelize);
 
 // Define relationships
 db.user.hasMany(db.apiConfig, { foreignKey: 'userId' });
@@ -59,6 +62,14 @@ db.coinUnitTracker.belongsTo(db.bot, { foreignKey: 'botId' });
 
 db.bot.hasMany(db.coinSnapshot, { foreignKey: 'botId' });
 db.coinSnapshot.belongsTo(db.bot, { foreignKey: 'botId' });
+
+// BotAsset relationships
+db.bot.hasMany(db.botAsset, { foreignKey: 'botId' });
+db.botAsset.belongsTo(db.bot, { foreignKey: 'botId' });
+
+// CoinDeviation relationships
+db.bot.hasMany(db.coinDeviation, { foreignKey: 'botId' });
+db.coinDeviation.belongsTo(db.bot, { foreignKey: 'botId' });
 
 // Apply column mappings to match existing database schema
 const applyColumnMappings = require('../utils/column-mapping');

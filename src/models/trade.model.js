@@ -30,13 +30,39 @@ module.exports = (sequelize, Sequelize) => {
       allowNull: false,
       field: 'to_coin'
     },
-    amount: {
+    fromAmount: {
       type: Sequelize.FLOAT,
-      allowNull: false
+      allowNull: false,
+      field: 'from_amount'
+    },
+    toAmount: {
+      type: Sequelize.FLOAT,
+      allowNull: false,
+      field: 'to_amount'
+    },
+    fromPrice: {
+      type: Sequelize.FLOAT,
+      allowNull: false,
+      field: 'from_price'
+    },
+    toPrice: {
+      type: Sequelize.FLOAT,
+      allowNull: false,
+      field: 'to_price'
+    },
+    commissionRate: {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      field: 'commission_rate'
+    },
+    commissionAmount: {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      field: 'commission_amount'
     },
     priceChange: {
       type: Sequelize.FLOAT,
-      allowNull: false,
+      allowNull: true,
       field: 'price_change'
     },
     status: {

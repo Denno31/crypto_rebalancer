@@ -1,6 +1,7 @@
 const db = require('../models');
 const ThreeCommasService = require('./threeCommas.service');
 const priceService = require('./price.service');
+const assetManager = require('./assetManager.service');
 const chalk = require('chalk');
 const Bot = db.bot;
 const ApiConfig = db.apiConfig;
@@ -9,6 +10,8 @@ const PriceHistory = db.priceHistory;
 const Trade = db.trade;
 const LogEntry = db.logEntry;
 const CoinUnitTracker = db.coinUnitTracker;
+const BotAsset = db.botAsset;
+const AssetLock = db.assetLock;
 
 /**
  * Format and print a log message with timestamp, level, and bot info
@@ -215,10 +218,32 @@ class BotService {
       
       // If we're not holding any coin yet, start with initial coin
       if (!bot.currentCoin && bot.initialCoin) {
-        bot.currentCoin = bot.initialCoin;
-        await bot.save();
-        await LogEntry.log(db, 'INFO', `Bot started with initial coin ${bot.initialCoin}`, botId);
-        return true;
+        // Initialize with flexible capital allocation
+        const initializedAsset = await this.initializeWithFlexibleAllocation(
+          bot, 
+          threeCommasClient, 
+          bot.initialCoin
+        );
+        
+        if (initializedAsset) {
+          bot.currentCoin = bot.initialCoin;
+          await bot.save();
+          await LogEntry.log(
+            db, 
+            'INFO', 
+            `Bot started with initial coin ${bot.initialCoin} (Amount: ${initializedAsset.amount})`, 
+            botId
+          );
+          return true;
+        } else {
+          await LogEntry.log(
+            db, 
+            'ERROR', 
+            `Failed to initialize with ${bot.initialCoin}`, 
+            botId
+          );
+          return false;
+        }
       }
       
       // If we don't have a current coin, we can't proceed
@@ -233,11 +258,90 @@ class BotService {
         return false;
       }
       
-      // Check for better performing coins
-      const currentPrice = priceData[bot.currentCoin].price;
+      // Evaluate coins based on snapshot comparison (relative performance)
       let bestCoin = bot.currentCoin;
-      let bestPrice = currentPrice;
       
+      // Get current coin's snapshot
+      const CoinSnapshot = db.coinSnapshot;
+      const currentCoinSnapshot = await CoinSnapshot.findOne({
+        where: { botId: bot.id, coin: bot.currentCoin }
+      });
+      
+      if (!currentCoinSnapshot) {
+        logMessage('WARNING', `No snapshot found for ${bot.currentCoin}, creating one now`, bot.name);
+        
+        // Create a snapshot for current coin if it doesn't exist
+        await CoinSnapshot.create({
+          botId: bot.id,
+          coin: bot.currentCoin,
+          initialPrice: priceData[bot.currentCoin].price,
+          snapshotTimestamp: new Date(),
+          wasEverHeld: true,
+          unitsHeld: 0, // Will be updated later
+          ethEquivalentValue: 0 // Will be updated later
+        });
+        
+        // Return early since we just created the snapshot
+        return true;
+      }
+      
+      // Get current price of the coin we're holding
+      const currentPrice = priceData[bot.currentCoin].price;
+      const currentPriceThen = currentCoinSnapshot.initialPrice;
+      
+      // Calculate deviation ratio for current coin (how much it moved since snapshot)
+      const currentDeviationRatio = currentPrice / currentPriceThen;
+      
+      // Fetch asset to get current holding amount
+      const BotAsset = db.botAsset;
+      const currentAsset = await BotAsset.findOne({
+        where: { botId: bot.id, coin: bot.currentCoin }
+      });
+      
+      if (!currentAsset) {
+        logMessage('WARNING', `No asset found for ${bot.currentCoin}, unexpected state`, bot.name);
+        await LogEntry.log(db, 'WARNING', `No asset found for ${bot.currentCoin}, unexpected state`, botId);
+        return false;
+      }
+      
+      const currentValueUSDT = currentAsset.amount * currentPrice;
+      const currentValueInETH = await this.convertToETH(bot, currentValueUSDT);
+      
+      // Fetch actual commission rates from the exchange if we have the account ID
+      if (bot.accountId && !bot._cachedCommissionRate) {
+        try {
+          logMessage('INFO', `Fetching actual commission rates from exchange for account ${bot.accountId}`, bot.name);
+          const [rateError, rateData] = await threeCommasClient.getExchangeCommissionRates(bot.accountId);
+          
+          if (!rateError && rateData) {
+            // For market orders, we use taker fee
+            const actualCommissionRate = rateData.takerRate;
+            
+            logMessage('INFO', `Actual commission rate from exchange: ${actualCommissionRate * 100}% (${rateData.source})`, bot.name);
+            await LogEntry.log(db, 'INFO', `Actual commission rate from exchange: ${actualCommissionRate * 100}% (${rateData.source})`, botId);
+            
+            // Cache the commission rate for this bot instance
+            bot._cachedCommissionRate = actualCommissionRate;
+          } else if (rateError) {
+            logMessage('WARNING', `Failed to get commission rates: ${rateError.message}. Using default: ${bot.commissionRate * 100}%`, bot.name);
+            await LogEntry.log(db, 'WARNING', `Failed to get commission rates: ${rateError.message}. Using default: ${bot.commissionRate * 100}%`, botId);
+          }
+        } catch (error) {
+          logMessage('WARNING', `Error fetching commission rates: ${error.message}`, bot.name);
+          await LogEntry.log(db, 'WARNING', `Error fetching commission rates: ${error.message}`, botId);
+        }
+      }
+      
+      // Log current state
+      logMessage('INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, bot.name);
+      logMessage('INFO', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, bot.name);
+      await LogEntry.log(db, 'INFO', `Current coin: ${bot.currentCoin}, Current value: ${currentValueUSDT} USDT / ${currentValueInETH} ETH`, botId);
+      await LogEntry.log(db, 'TRADE', `Price movement: ${bot.currentCoin} moved from ${currentPriceThen} to ${currentPrice} (${(currentDeviationRatio - 1) * 100}%)`, botId);
+      
+      let bestDeviation = -Infinity;
+      let eligibleCoins = [];
+      
+      // Evaluate each coin's performance relative to the current coin
       for (const coin of coins) {
         if (coin === bot.currentCoin) continue;
         
@@ -246,15 +350,99 @@ class BotService {
           continue;
         }
         
-        const price = priceData[coin].price;
-        const priceDiffPercent = ((price - currentPrice) / currentPrice) * 100;
+        // Get the snapshot for this coin
+        const coinSnapshot = await CoinSnapshot.findOne({
+          where: { botId: bot.id, coin: coin }
+        });
         
-        if (priceDiffPercent > bot.thresholdPercentage) {
-          if (price > bestPrice) {
-            bestCoin = coin;
-            bestPrice = price;
-          }
+        // If no snapshot exists, create one
+        if (!coinSnapshot) {
+          await CoinSnapshot.create({
+            botId: bot.id,
+            coin: coin,
+            initialPrice: priceData[coin].price,
+            snapshotTimestamp: new Date(),
+            wasEverHeld: false,
+            unitsHeld: 0,
+            ethEquivalentValue: 0
+          });
+          
+          // Skip this coin for now since we just created its snapshot
+          continue;
         }
+        
+        const priceNow = priceData[coin].price;
+        const priceThen = coinSnapshot.initialPrice;
+        
+        // Calculate the relative deviation between this coin and current coin
+        // Get the commission rate - either from the API, cache, or fallback to bot config
+        let commissionRate = bot.commissionRate || 0.002; // Default 0.2% as fallback
+        
+        // Use the cached dynamic commission rate if available
+        if (bot._cachedCommissionRate) {
+          commissionRate = bot._cachedCommissionRate;
+          logMessage('INFO', `Using cached commission rate: ${commissionRate * 100}%`, bot.name);
+        }
+        
+        // This is where we decide which coin to buy based on our deviation calculation
+        // If we find a coin that exceeds our threshold PLUS commission costs, switch to it
+        // We multiply commission by 2 to account for both buy and eventual sell commission
+        const effectiveThreshold = (bot.thresholdPercentage / 100) + (commissionRate * 2);
+        
+        const deviation = (priceNow / priceThen) / currentDeviationRatio - 1;
+        
+        logMessage('INFO', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, bot.name);
+        await LogEntry.log(db, 'TRADE', `${coin}: Price ${priceThen} → ${priceNow}, Deviation: ${deviation * 100}%`, botId);
+        
+        // Store coin deviation data for charting
+        await this.storeCoinDeviation(bot.id, bot.currentCoin, coin, currentPrice, priceNow, deviation * 100);
+        
+        // Estimate how many units we would get if we switched
+        const newUnits = currentValueUSDT / priceNow;
+        
+        // Check if this coin's performance exceeds our threshold PLUS commission
+        if (deviation > effectiveThreshold) {
+          logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, bot.name);
+          await LogEntry.log(db, 'TRADE', `${coin} deviation (${deviation.toFixed(4)}) exceeds threshold+commission (${effectiveThreshold.toFixed(4)})`, botId);
+          
+          // Check re-entry rule - don't switch to a coin if we would get fewer units than max
+          if (coinSnapshot.wasEverHeld && newUnits <= coinSnapshot.maxUnitsReached) {
+            logMessage('INFO', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, bot.name);
+            await LogEntry.log(db, 'TRADE', `Skipping ${coin}: Re-entry rule violated (${newUnits} < ${coinSnapshot.maxUnitsReached})`, botId);
+            continue; // Skip to the next coin
+          }
+          
+          // This coin is our best option so far
+          if (bestCoin === null || deviation > bestDeviation) {
+            bestCoin = coin;
+            bestDeviation = deviation;
+          }
+          
+          // Add to eligible coins list for further processing
+          eligibleCoins.push({
+            coin,
+            price: priceNow,
+            deviation,
+            newUnits
+          });
+        } else if (deviation > bot.thresholdPercentage / 100) {
+          // This coin exceeds raw threshold but not after commission costs
+          logMessage('INFO', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, bot.name);
+          await LogEntry.log(db, 'TRADE', `${coin} deviation (${deviation.toFixed(4)}) exceeds raw threshold (${(bot.thresholdPercentage / 100).toFixed(4)}) but not after commission (${effectiveThreshold.toFixed(4)})`, botId);
+        }
+      }
+      
+      // Log eligible coins
+      if (eligibleCoins.length > 0) {
+        logMessage('INFO', `Found ${eligibleCoins.length} eligible coins for swap`, bot.name);
+        await LogEntry.log(db, 'TRADE', `Found ${eligibleCoins.length} eligible coins for swap`, botId);
+        eligibleCoins.forEach(async (ec) => {
+          logMessage('INFO', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, bot.name);
+          await LogEntry.log(db, 'TRADE', `  ${ec.coin}: Deviation ${ec.deviation * 100}%, Units: ${ec.newUnits}`, botId);
+        });
+      } else {
+        logMessage('INFO', `No eligible coins found for swap`, bot.name);
+        await LogEntry.log(db, 'TRADE', `No eligible coins found for swap`, botId);
       }
       
       // Check global profit protection if reference coin is set
@@ -271,13 +459,14 @@ class BotService {
           const minAcceptableValue = currentValue * (1 - (bot.globalThresholdPercentage / 100));
           await bot.update({ minAcceptableValue });
           logMessage('INFO', `Updated min acceptable value to ${minAcceptableValue}`, bot.name);
+          await LogEntry.log(db, 'TRADE', `Portfolio value check: Updated min acceptable value to ${minAcceptableValue}`, botId);
         }
         
         // Check if trade would violate global profit protection
         if (currentValue < bot.minAcceptableValue) {
           logMessage('WARNING', `Trade prevented by global profit protection (Current: ${currentValue}, Min: ${bot.minAcceptableValue})`, bot.name);
-          await LogEntry.log(db, 'WARNING', 
-            `Trade prevented by global profit protection. ` +
+          await LogEntry.log(db, 'TRADE', 
+            `TRADE PREVENTED by global profit protection. ` +
             `Current value: ${currentValue}, ` +
             `Min acceptable: ${bot.minAcceptableValue}, ` +
             `Peak: ${bot.globalPeakValue}`, 
@@ -288,7 +477,7 @@ class BotService {
           if (bot.currentCoin !== bot.referenceCoin) {
             bestCoin = bot.referenceCoin;
             logMessage('INFO', `Forcing trade to reference coin ${chalk.yellow(bot.referenceCoin)} to preserve value`, bot.name);
-            await LogEntry.log(db, 'INFO', 
+            await LogEntry.log(db, 'TRADE', 
               `Forcing trade to reference coin ${bot.referenceCoin} to preserve value`, 
               botId
             );
@@ -301,7 +490,7 @@ class BotService {
       // Execute trade if needed
       if (bestCoin !== bot.currentCoin) {
         logMessage('INFO', `Found better coin: ${chalk.yellow(bestCoin)} vs ${chalk.yellow(bot.currentCoin)}`, bot.name);
-        await LogEntry.log(db, 'INFO', `Found better coin: ${bestCoin} vs ${bot.currentCoin}`, botId);
+        await LogEntry.log(db, 'TRADE', `Found better coin: ${bestCoin} vs ${bot.currentCoin}`, botId);
         
         // Execute trade
         const tradeResult = await this.executeTrade(bot, threeCommasClient, bot.currentCoin, bestCoin);
@@ -354,13 +543,21 @@ class BotService {
   }
 
   /**
-   * Calculate the current portfolio value in reference coin
+   * Calculate the current portfolio value in reference coin or preferred stablecoin
    * @param {Object} bot - Bot instance
    * @param {Object} threeCommasClient - 3Commas client
-   * @returns {Promise<Number>} - Portfolio value in reference coin
+   * @param {String} targetCurrency - Optional, specify the currency to return value in (defaults to bot.preferredStablecoin)
+   * @returns {Promise<Number>} - Portfolio value in the target currency
    */
-  async calculatePortfolioValue(bot, threeCommasClient) {
+  async calculatePortfolioValue(bot, threeCommasClient, targetCurrency = null) {
     try {
+      // Determine which currency to use for valuation
+      const valuationCurrency = targetCurrency || bot.preferredStablecoin || bot.referenceCoin || 'USDT';
+      
+      // Log which currency we're using for valuation
+      const botId = bot.id;
+      await LogEntry.log(db, 'INFO', `Calculating portfolio value in ${valuationCurrency}`, botId);
+      
       // Get account balance
       const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
       
@@ -382,93 +579,26 @@ class BotService {
         throw new Error(`No balance found for ${bot.currentCoin}`);
       }
       
-      // If current coin is reference coin, just return the balance
-      if (bot.currentCoin === bot.referenceCoin) {
+      // If current coin is the valuation currency, just return the balance
+      if (bot.currentCoin === valuationCurrency) {
         return parseFloat(coinBalance.amount);
       }
       
-      // Get price of current coin in reference coin
+      // Get price of current coin in valuation currency
       const { price } = await priceService.getPrice(
         { pricingSource: '3commas', fallbackSource: 'coingecko' },
         { apiKey: threeCommasClient.apiKey, apiSecret: threeCommasClient.apiSecret },
         bot.currentCoin,
-        bot.referenceCoin,
+        valuationCurrency,
         bot.id
       );
       
       // Calculate value
       return parseFloat(coinBalance.amount) * price;
     } catch (error) {
-      await LogEntry.log(db, 'ERROR', `Failed to calculate portfolio value: ${error.message}`, bot.id);
+      const botId = bot.id;
+      await LogEntry.log(db, 'ERROR', `Failed to calculate portfolio value: ${error.message}`, botId);
       throw error;
-    }
-  }
-
-  /**
-   * Execute a trade on 3Commas
-   * @param {Object} bot - Bot instance
-   * @param {Object} threeCommasClient - 3Commas client
-   * @param {String} fromCoin - Source coin
-   * @param {String} toCoin - Target coin
-   * @returns {Promise<Object>} - Trade result
-   */
-  async executeTrade(bot, threeCommasClient, fromCoin, toCoin) {
-    try {
-      // Get account info
-      const [accountError, accountData] = await threeCommasClient.request('accounts', bot.accountId);
-      
-      if (accountError) {
-        throw new Error(`Failed to get account data: ${JSON.stringify(accountError)}`);
-      }
-      
-      // Find from coin balance
-      const fromCoinBalance = accountData.balances.find(b => b.currency_code === fromCoin);
-      
-      if (!fromCoinBalance || parseFloat(fromCoinBalance.amount) <= 0) {
-        throw new Error(`No balance found for ${fromCoin}`);
-      }
-      
-      // Create smart trade
-      const [tradeError, tradeData] = await threeCommasClient.request(
-        'smart_trades',
-        'create_smart_trade',
-        {
-          account_id: bot.accountId,
-          pair: `${toCoin}_${fromCoin}`,
-          position_type: 'buy',
-          units: {
-            [fromCoin]: fromCoinBalance.amount
-          },
-          take_profit: {
-            enabled: false
-          },
-          stop_loss: {
-            enabled: false
-          }
-        }
-      );
-      
-      if (tradeError) {
-        throw new Error(`Failed to create trade: ${JSON.stringify(tradeError)}`);
-      }
-      
-      // Get price data for tracking the change
-      const priceChange = await this.calculatePriceChange(fromCoin, toCoin);
-      
-      // Return successful trade data
-      return {
-        success: true,
-        tradeId: tradeData.id.toString(),
-        amount: parseFloat(fromCoinBalance.amount),
-        priceChange
-      };
-    } catch (error) {
-      await LogEntry.log(db, 'ERROR', `Trade execution failed: ${error.message}`, bot.id);
-      
-      return {
-        success: false,
-        error: error.message
-      };
     }
   }
 
@@ -502,6 +632,762 @@ class BotService {
     } catch (error) {
       logMessage('ERROR', `Error calculating price change: ${error.message}`, '');
       return 0; // Default to 0 if we can't calculate
+    }
+  }
+
+  /**
+   * Execute a trade from one coin to another with snapshot tracking
+   * @param {Object} bot - Bot instance
+   * @param {Object} threeCommasClient - 3Commas client
+   * @param {String} fromCoin - Coin to sell
+   * @param {String} toCoin - Coin to buy
+   * @returns {Promise<Object>} - Trade result
+   */
+  async executeTrade(bot, threeCommasClient, fromCoin, toCoin) {
+    // Initialize asset lock variable
+    let assetLock = null;
+    
+    try {
+      logMessage('INFO', `Preparing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Preparing trade: ${fromCoin} → ${toCoin}`, bot.id);
+      
+      // Find the asset we are selling
+      const fromAsset = await BotAsset.findOne({
+        where: {
+          botId: bot.id,
+          coin: fromCoin
+        }
+      });
+      
+      if (!fromAsset) {
+        throw new Error(`No asset found for ${fromCoin}`);
+      }
+      
+      // Get the account ID from the bot configuration
+      if (!bot.accountId) {
+        throw new Error('No 3Commas account ID configured for this bot');
+      }
+      
+      // Check if the assets can be traded (not locked by other bots)
+      const assetCheck = await assetManager.canTradeAsset(bot.id, fromCoin, fromAsset.amount);
+      if (!assetCheck.canTrade) {
+        logMessage('WARNING', `Cannot trade ${fromCoin}: ${assetCheck.reason}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Trade rejected: ${assetCheck.reason}`, bot.id);
+        throw new Error(`Cannot trade ${fromCoin}: ${assetCheck.reason}`);
+      }
+      
+      // Acquire a lock on the assets being traded
+      const lockResult = await assetManager.lockAssets(
+        bot.id, 
+        fromCoin, 
+        fromAsset.amount, 
+        `trade_to_${toCoin}`, 
+        5 // Lock for 5 minutes
+      );
+      
+      if (!lockResult.success) {
+        logMessage('WARNING', `Failed to lock ${fromCoin} for trading: ${lockResult.error}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Trade rejected: ${lockResult.error}`, bot.id);
+        throw new Error(`Failed to lock ${fromCoin} for trading: ${lockResult.error}`);
+      }
+      
+      // Store lock ID for later release
+      assetLock = {
+        id: lockResult.lockId,
+        botId: bot.id
+      };
+      
+      logMessage('INFO', `Executing trade: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Executing trade: ${fromCoin} → ${toCoin}`, bot.id);
+      
+      // Get system configuration for pricing
+      const systemConfig = await SystemConfig.findOne({ where: { active: true } });
+      const apiConfig = await ApiConfig.findOne({ where: { userId: bot.userId } });
+      
+      if (!systemConfig || !apiConfig) {
+        throw new Error('Missing required configuration');
+      }
+      
+      // Get current prices for both coins
+      const { price: fromPrice } = await priceService.getPrice(
+        systemConfig, 
+        apiConfig, 
+        fromCoin, 
+        'USDT', 
+        bot.id
+      );
+      
+      const { price: toPrice } = await priceService.getPrice(
+        systemConfig, 
+        apiConfig, 
+        toCoin, 
+        'USDT', 
+        bot.id
+      );
+      
+      // Calculate value and commission for our own tracking
+      const fromValueUSDT = fromAsset.amount * fromPrice;
+      const commissionRate = bot.commissionRate || 0.002; // Default 0.2% if not configured
+      const commissionAmount = fromValueUSDT * commissionRate;
+      
+      // Calculate price change percentage
+      const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
+      
+      // Calculate ETH equivalent value for global tracking
+      const valueInETH = await this.convertToETH(bot, fromValueUSDT);
+      
+      // Get the preferred stablecoin from the bot (or default to USDT)
+      const stablecoin = bot.preferredStablecoin || 'USDT';
+
+      // Log key information before executing trade
+      logMessage('INFO', `Trade amount: ${chalk.yellow(fromAsset.amount)} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.name);
+      logMessage('INFO', `Executing trade through 3Commas API...`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Trade amount: ${fromAsset.amount} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.id);
+      
+      // Use take profit settings if configured on the bot
+      const useTakeProfit = bot.useTakeProfit || false;
+      const takeProfitPercentage = bot.takeProfitPercentage || 2; // Default 2%
+      
+      // Check if we're in development/testing mode to use simulation
+      const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
+      const useSimulation = isDev || process.env.SIMULATE_TRADES === 'true';
+      
+      let tradeResult;
+      let tradeId;
+      
+      if (useSimulation) {
+        // Simulation mode - calculate amounts locally without calling 3Commas API
+        logMessage('INFO', `SIMULATION MODE: Simulating trade without calling 3Commas API`, bot.name);
+        await LogEntry.log(db, 'TRADE', `SIMULATION MODE: Simulating trade without calling 3Commas API`, bot.id);
+        
+        const netValueUSDT = fromValueUSDT - commissionAmount;
+        const toAmount = netValueUSDT / toPrice;
+        
+        tradeResult = {
+          success: true,
+          tradeId: `SIMULATED-${Date.now()}`,
+          status: 'completed',
+          amount: toAmount
+        };
+      } else {
+        // Real trading mode - call 3Commas API to execute the trade
+        logMessage('INFO', `Executing real trade via 3Commas API`, bot.name);
+        await LogEntry.log(db, 'TRADE', `Executing real trade via 3Commas API`, bot.id);
+        
+        // Call 3Commas API to execute the trade
+        const [error, response] = await threeCommasClient.executeTrade(
+          bot.accountId,
+          fromCoin,
+          toCoin,
+          fromAsset.amount,
+          useTakeProfit,
+          takeProfitPercentage
+        );
+        
+        if (error || !response) {
+          const errorMsg = error?.message || 'Unknown error executing trade with 3Commas API';
+          logMessage('ERROR', `3Commas trade execution failed: ${errorMsg}`, bot.name);
+          await LogEntry.log(db, 'ERROR', `3Commas trade execution failed: ${errorMsg}`, bot.id);
+          throw new Error(errorMsg);
+        }
+        
+        tradeResult = response;
+        tradeId = response.tradeId;
+        
+        // Log the successful API trade
+        logMessage('INFO', `3Commas trade executed successfully: ID ${tradeId}`, bot.name);
+        await LogEntry.log(db, 'TRADE', `3Commas trade executed successfully: ID ${tradeId}`, bot.id);
+        
+        // For market orders we can assume completion, but for other types we'd need to check status
+        if (response.status !== 'completed') {
+          logMessage('INFO', `Trade ${tradeId} status: ${response.status} - will proceed with DB updates`, bot.name);
+          await LogEntry.log(db, 'TRADE', `Trade ${tradeId} status: ${response.status}`, bot.id);
+        }
+      }
+      
+      // Calculate or use the amount received (from simulation or actual trade)
+      // This is an estimate for now if using real trading since 3Commas doesn't immediately return the amount
+      const netValueUSDT = fromValueUSDT - commissionAmount;
+      const toAmount = tradeResult.amount || netValueUSDT / toPrice;
+      
+      // Track commission details
+      const totalCommissionsPaid = (bot.totalCommissionsPaid || 0) + commissionAmount;
+      
+      // Log the commission details
+      logMessage('INFO', `Commission: ${chalk.yellow(commissionAmount.toFixed(4))} USDT (${commissionRate * 100}%)`, bot.name);
+      logMessage('INFO', `Total commissions paid: ${chalk.yellow(totalCommissionsPaid.toFixed(4))} USDT`, bot.name);
+      await LogEntry.log(db, 'INFO', `Commission: ${commissionAmount.toFixed(4)} USDT (${commissionRate * 100}%)`, bot.id);
+      await LogEntry.log(db, 'INFO', `Total commissions paid: ${totalCommissionsPaid.toFixed(4)} USDT`, bot.id);
+      
+      // Create a new asset for the coin we're buying
+      const toAsset = await BotAsset.create({
+        botId: bot.id,
+        coin: toCoin,
+        amount: toAmount,
+        entryPrice: toPrice,
+        usdtEquivalent: fromValueUSDT,
+        lastUpdated: new Date(),
+        stablecoin: stablecoin
+      });
+      
+      // Delete the asset we sold
+      await fromAsset.destroy();
+      
+      // Update the snapshots using our dedicated helper method
+      // Update the snapshot for the coin we're selling (fromCoin)
+      await this.updateCoinSnapshot(
+        bot, 
+        fromCoin, 
+        fromAsset.amount, // We track the amount we just sold
+        fromPrice, 
+        valueInETH
+      );
+      
+      // Update the snapshot for the coin we're buying (toCoin)
+      await this.updateCoinSnapshot(
+        bot, 
+        toCoin, 
+        toAmount, 
+        toPrice, 
+        valueInETH
+      );
+      
+      // Track global peak value in ETH
+      if (!bot.globalPeakValueInETH || valueInETH > bot.globalPeakValueInETH) {
+        await bot.update({ globalPeakValueInETH: valueInETH });
+        await LogEntry.log(db, 'INFO', `Updated global peak ETH value to ${valueInETH}`, bot.id);
+      }
+
+      // Update current coin and accumulated commissions in the bot record
+      await bot.update({ 
+        currentCoin: toCoin,
+        totalCommissionsPaid: totalCommissionsPaid
+      });
+      
+      // Log the commission update
+      await LogEntry.log(db, 'INFO', `Added commission: ${commissionAmount.toFixed(8)} USDT, total: ${totalCommissionsPaid.toFixed(8)} USDT`, bot.id);
+      
+      // Create trade record for history with commission details
+      await Trade.create({
+        botId: bot.id,
+        userId: bot.userId,
+        fromCoin,
+        toCoin,
+        fromAmount: fromAsset.amount,
+        toAmount,
+        fromPrice,
+        toPrice,
+        commissionRate: commissionRate,
+        commissionAmount: commissionAmount,
+        priceChange: priceChange, // Use the calculated price change
+        status: tradeResult.status || 'completed',
+        executed_at: new Date(),
+        tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}` // Use the actual trade ID if available
+      });
+      
+      logMessage('INFO', `Trade completed: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
+      await LogEntry.log(db, 'TRADE', `Trade completed: ${fromCoin} → ${toCoin}`, bot.id);
+      
+      // Release the asset lock
+      if (assetLock) {
+        await assetManager.releaseLock(assetLock.id, assetLock.botId);
+        assetLock = null;
+      }
+      
+      return {
+        success: true,
+        tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}`,
+        amount: toAmount,
+        priceChange,
+        status: tradeResult.status || 'completed'
+      };
+    } catch (error) {
+      logMessage('ERROR', `Trade execution error: ${error.message}`, bot.name);
+      await LogEntry.log(db, 'ERROR', `Trade execution error: ${error.message}`, bot.id);
+      
+      // Always release lock if we have one, even on failure
+      if (assetLock) {
+        try {
+          await assetManager.releaseLock(assetLock.id, assetLock.botId);
+        } catch (lockError) {
+          logMessage('ERROR', `Failed to release asset lock: ${lockError.message}`, bot.name);
+        }
+      }
+      
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Initialize a bot with flexible capital allocation from initial coin
+   * @param {Object} bot - Bot instance
+   * @param {Object} threeCommasClient - 3Commas client
+   * @param {String} initialCoin - Initial coin to allocate from
+   * @returns {Promise<Object>} - Created bot asset
+   */
+  async initializeWithFlexibleAllocation(bot, threeCommasClient, initialCoin) {
+    try {
+      let coinBalance = null;
+      
+      // Check if we're in development/testing mode to use mock data
+      const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
+      
+      if (isDev) {
+        // Use mock data for testing/development
+        logMessage('INFO', `Using mock balance data for ${initialCoin} in development mode`, bot.name);
+        await LogEntry.log(db, 'INFO', `Using mock balance data for ${initialCoin} in development mode`, bot.id);
+        
+        // Create mock balance
+        coinBalance = {
+          currency_code: initialCoin,
+          amount: '100.0',
+          currency_name: initialCoin,
+          usd_value: '100.0'
+        };
+      } else {
+        // Production mode - try to get real balances
+        try {
+          // Get account info to check available balance
+          const [accountError, accountData] = await threeCommasClient.request('accounts', bot.accountId);
+          
+          if (accountError) {
+            throw new Error(`Failed to get account data: ${JSON.stringify(accountError)}`);
+          }
+          
+          // Validate account data structure
+          if (!accountData || !accountData.balances || !Array.isArray(accountData.balances)) {
+            // Try to get balances directly using the load_balances endpoint
+            const [balancesError, balancesData] = await threeCommasClient.request('accounts', `${bot.accountId}/load_balances`);
+            
+            if (balancesError || !balancesData || !Array.isArray(balancesData)) {
+              // If we still can't get balances, fall back to mock data
+              logMessage('WARNING', `Failed to get balance data, using mock data instead`, bot.name);
+              await LogEntry.log(db, 'WARNING', `Failed to get balance data: ${JSON.stringify(balancesError || 'Invalid response')}, using mock data`, bot.id);
+              
+              coinBalance = {
+                currency_code: initialCoin,
+                amount: '100.0',
+                currency_name: initialCoin,
+                usd_value: '100.0'
+              };
+            } else {
+              // We got balances from the second endpoint
+              coinBalance = balancesData.find(b => b.currency_code === initialCoin);
+            }
+          } else {
+            // We got balances from the first endpoint
+            coinBalance = accountData.balances.find(b => b.currency_code === initialCoin);
+          }
+        } catch (apiError) {
+          // Fall back to mock data if any error occurs
+          logMessage('WARNING', `API error: ${apiError.message}, using mock data`, bot.name);
+          await LogEntry.log(db, 'WARNING', `API error: ${apiError.message}, using mock data`, bot.id);
+          
+          coinBalance = {
+            currency_code: initialCoin,
+            amount: '100.0',
+            currency_name: initialCoin,
+            usd_value: '100.0'
+          };
+        }
+      }
+      
+      // Ensure we have a valid coin balance
+      if (!coinBalance || parseFloat(coinBalance.amount) <= 0) {
+        throw new Error(`No balance found for ${initialCoin}`);
+      }
+      
+      // Continue with allocation using the coin balance (real or mock)
+      return this.processAllocation(bot, threeCommasClient, initialCoin, coinBalance);
+    } catch (error) {
+      logMessage('ERROR', `Allocation failed: ${error.message}`, bot.name);
+      await LogEntry.log(db, 'ERROR', `Allocation failed: ${error.message}`, bot.id);
+      return null;
+    }
+  }
+  
+  /**
+   * Convert a value in USDT to ETH equivalent
+   * @param {Object} bot - Bot instance
+   * @param {Number} usdtValue - Value in USDT
+   * @returns {Promise<Number>} - Value in ETH
+   */
+  async convertToETH(bot, usdtValue) {
+    try {
+      // Get the price service from the system
+      const priceService = require('./price.service');
+      
+      // Get the system and API configurations
+    // Query by userId instead of 'active' since that field doesn't exist
+    const systemConfig = await db.systemConfig.findOne({ where: { userId: bot.userId } });
+      const apiConfig = await db.apiConfig.findOne({ where: { userId: bot.userId } });
+      
+      if (!systemConfig || !apiConfig) {
+        throw new Error('Missing required configuration');
+      }
+      
+      // Get the current ETH price in USDT
+      const { price: ethPrice } = await priceService.getPrice(
+        systemConfig,
+        apiConfig,
+        'ETH',
+        'USDT',
+        bot.id
+      );
+      
+      // Convert USDT value to ETH
+      const ethValue = usdtValue / ethPrice;
+      return ethValue;
+    } catch (error) {
+      console.error(`Error converting to ETH: ${error.message}`);
+      // Return a safe default in case of error
+      return usdtValue / 3000; // Assume ETH is $3000 as fallback
+    }
+  }
+  
+  /**
+   * Update a coin's snapshot after acquiring or trading
+   * @param {Object} bot - Bot instance
+   * @param {String} coin - Coin symbol
+   * @param {Number} amount - Amount of coin held
+   * @param {Number} price - Current price in USDT
+   * @param {Number} valueInETH - ETH equivalent value
+   * @returns {Promise<Object>} - Updated or created snapshot
+   */
+  async updateCoinSnapshot(bot, coin, amount, price, valueInETH) {
+    try {
+      const CoinSnapshot = db.coinSnapshot;
+      
+      // Find or create the snapshot for this coin
+      const [snapshot, created] = await CoinSnapshot.findOrCreate({
+        where: { botId: bot.id, coin: coin },
+        defaults: {
+          initialPrice: price,
+          snapshotTimestamp: new Date(),
+          unitsHeld: amount,
+          ethEquivalentValue: valueInETH,
+          wasEverHeld: true,
+          maxUnitsReached: amount
+        }
+      });
+      
+      // If we're updating an existing snapshot, reset the price point
+      if (!created) {
+        await snapshot.update({
+          initialPrice: price,
+          snapshotTimestamp: new Date(),
+          unitsHeld: amount,
+          ethEquivalentValue: valueInETH,
+          wasEverHeld: true
+        });
+        
+        // Update maxUnitsReached if the new amount is higher
+        if (amount > snapshot.maxUnitsReached) {
+          await snapshot.update({
+            maxUnitsReached: amount
+          });
+        }
+      }
+      
+      logMessage('INFO', `Updated snapshot for ${coin}: price=${price}, units=${amount}`, bot.name);
+      return snapshot;
+    } catch (error) {
+      logMessage('ERROR', `Failed to update coin snapshot: ${error.message}`, bot.name);
+      throw error;
+    }
+  }
+  
+  /**
+   * Process the allocation once we have a valid coin balance
+   * @param {Object} bot - Bot instance
+   * @param {Object} threeCommasClient - 3Commas client
+   * @param {String} initialCoin - Initial coin being allocated
+   * @param {Object} coinBalance - Coin balance object
+   * @returns {Promise<Object>} - Created bot asset
+   * @private
+   */
+  async processAllocation(bot, threeCommasClient, initialCoin, coinBalance) {
+    try {
+      // Calculate allocation based on percentage or manual budget
+      let allocatedAmount;
+      
+      if (bot.manualBudgetAmount && bot.manualBudgetAmount > 0) {
+        // Use manual budget amount if specified
+        allocatedAmount = bot.manualBudgetAmount;
+        
+        // Make sure we don't exceed available balance
+        if (allocatedAmount > parseFloat(coinBalance.amount)) {
+          allocatedAmount = parseFloat(coinBalance.amount);
+          logMessage('WARNING', `Manual budget exceeds available balance, using maximum: ${allocatedAmount} ${initialCoin}`, bot.name);
+        }
+      } else {
+        // Calculate based on percentage (default to 100% if not specified)
+        const percentage = bot.allocationPercentage || 100;
+        allocatedAmount = (parseFloat(coinBalance.amount) * percentage) / 100;
+      }
+      
+      // Use preferred stablecoin or default to USDT
+      const stablecoin = bot.preferredStablecoin || 'USDT';
+      
+      // Get price in preferred stablecoin for tracking
+      const { price } = await priceService.getPrice(
+        { pricingSource: '3commas', fallbackSource: 'coingecko' },
+        { apiKey: threeCommasClient.apiKey, apiSecret: threeCommasClient.apiSecret },
+        initialCoin,
+        stablecoin,
+        bot.id
+      );
+      
+      // Create or update bot asset record
+      let botAsset = await BotAsset.findOne({
+        where: {
+          botId: bot.id,
+          coin: initialCoin
+        }
+      });
+      
+      if (botAsset) {
+        await botAsset.update({
+          amount: allocatedAmount,
+          entryPrice: price,
+          usdtEquivalent: allocatedAmount * price, // Keep field name for DB compatibility
+          lastUpdated: new Date(),
+          stablecoin: stablecoin // Add stablecoin information
+        });
+      } else {
+        botAsset = await BotAsset.create({
+          botId: bot.id,
+          coin: initialCoin,
+          amount: allocatedAmount,
+          entryPrice: price,
+          usdtEquivalent: allocatedAmount * price, // Keep field name for DB compatibility
+          lastUpdated: new Date(),
+          stablecoin: stablecoin // Add stablecoin information
+        });
+      }
+
+      // Calculate ETH equivalent value for snapshot tracking
+      // This is important for re-entry protection and global value tracking
+      const valueInETH = await this.convertToETH(bot, allocatedAmount * price);
+      
+      // Create or update the coin snapshot for the initial coin
+      // This sets the baseline for future deviation calculations
+      await this.updateCoinSnapshot(
+        bot,
+        initialCoin,
+        allocatedAmount,
+        price,
+        valueInETH
+      );
+      
+      // Also update the global peak value in ETH if necessary
+      if (!bot.globalPeakValueInETH || valueInETH > bot.globalPeakValueInETH) {
+        await bot.update({ globalPeakValueInETH: valueInETH });
+        logMessage('INFO', `Updated global peak ETH value to ${valueInETH}`, bot.name);
+      }
+      
+      // Update the bot's current coin to reflect the initialization
+      await bot.update({ currentCoin: initialCoin });
+      
+      logMessage('INFO', `Allocated ${allocatedAmount} ${initialCoin} (${allocatedAmount * price} ${stablecoin}) to bot`, bot.name);
+      return botAsset;
+    } catch (error) {
+      logMessage('ERROR', `Allocation failed: ${error.message}`, bot.name);
+      await LogEntry.log(db, 'ERROR', `Allocation failed: ${error.message}`, bot.id);
+      return null;
+    }
+  }
+  
+  /**
+   * Update asset tracking for a bot
+   * @param {Number} botId - Bot ID
+   * @param {String} coin - Coin to update
+   * @param {Number} amount - Amount of coin
+   * @param {Number} price - Current price in USDT
+   */
+  async updateBotAsset(botId, coin, amount, price) {
+    try {
+      // Find or create bot asset record
+      let botAsset = await BotAsset.findOne({
+        where: {
+          botId,
+          coin
+        }
+      });
+      
+      const usdtEquivalent = amount * price;
+      
+      if (botAsset) {
+        await botAsset.update({
+          amount,
+          usdtEquivalent,
+          lastUpdated: new Date()
+        });
+      } else {
+        botAsset = await BotAsset.create({
+          botId,
+          coin,
+          amount,
+          entryPrice: price,
+          usdtEquivalent,
+          lastUpdated: new Date()
+        });
+      }
+      
+      return botAsset;
+    } catch (error) {
+      logMessage('ERROR', `Failed to update bot asset: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Store coin deviation data for historical tracking and charting
+   * @param {Number} botId - Bot ID
+   * @param {String} baseCoin - Base coin (current holding)
+   * @param {String} targetCoin - Target coin to compare against
+   * @param {Number} basePrice - Current price of base coin
+   * @param {Number} targetPrice - Current price of target coin
+   * @param {Number} deviationPercent - Percentage deviation between the coins
+   */
+  async storeCoinDeviation(botId, baseCoin, targetCoin, basePrice, targetPrice, deviationPercent) {
+    try {
+      const CoinDeviation = db.coinDeviation;
+      
+      // Store the deviation record
+      await CoinDeviation.create({
+        botId,
+        baseCoin,
+        targetCoin,
+        basePrice,
+        targetPrice,
+        deviationPercent,
+        timestamp: new Date()
+      });
+      
+      // For large datasets, we might want to implement a cleanup strategy
+      // to prevent the table from growing too large over time
+      // This could be a separate scheduled task
+      
+    } catch (error) {
+      // Log error but don't throw - this is a non-critical feature
+      logMessage('ERROR', `Failed to store coin deviation data: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Reconcile bot-tracked balances with actual exchange balances
+   * @param {Number} botId - Bot ID
+   * @param {Object} threeCommasClient - 3Commas client instance
+   * @returns {Promise<Object>} - Reconciliation results with discrepancies
+   */
+  async reconcileBalances(botId, threeCommasClient) {
+    try {
+      // Get bot information
+      const bot = await Bot.findByPk(botId);
+      if (!bot) {
+        throw new Error(`Bot with ID ${botId} not found`);
+      }
+      
+      // Get bot's tracked assets
+      const botAssets = await BotAsset.findAll({
+        where: { botId }
+      });
+      
+      if (botAssets.length === 0) {
+        logMessage('WARNING', `Bot ${bot.name} has no tracked assets`, bot.name);
+        return { success: true, discrepancies: [], message: 'No tracked assets found' };
+      }
+      
+      // Get actual account balances from exchange
+      const accountBalances = await threeCommasClient.getAccountTableData(bot.accountId);
+      if (!accountBalances || !accountBalances.length) {
+        throw new Error('Failed to retrieve account balances from exchange');
+      }
+      
+      // Convert exchange balances to a map for easier lookup
+      const exchangeBalanceMap = {};
+      accountBalances.forEach(balance => {
+        exchangeBalanceMap[balance.coin] = {
+          amount: parseFloat(balance.amount),
+          usdtValue: parseFloat(balance.amountInUsd)
+        };
+      });
+      
+      // Compare bot-tracked assets with exchange balances
+      const discrepancies = [];
+      botAssets.forEach(asset => {
+        const exchangeBalance = exchangeBalanceMap[asset.coin];
+        
+        if (!exchangeBalance) {
+          // Coin tracked by bot not found in exchange
+          discrepancies.push({
+            coin: asset.coin,
+            botTracked: asset.amount,
+            exchange: 0,
+            difference: -asset.amount,
+            severity: 'HIGH',
+            message: `Bot tracks ${asset.amount} ${asset.coin}, but none found in exchange`
+          });
+        } else if (Math.abs(asset.amount - exchangeBalance.amount) > 0.00001) { // Small epsilon for floating point comparison
+          // Balance discrepancy found
+          const difference = exchangeBalance.amount - asset.amount;
+          const percentDiff = (difference / asset.amount) * 100;
+          
+          // Determine severity based on percentage difference
+          let severity = 'LOW';
+          if (Math.abs(percentDiff) > 10) {
+            severity = 'HIGH';
+          } else if (Math.abs(percentDiff) > 2) {
+            severity = 'MEDIUM';
+          }
+          
+          discrepancies.push({
+            coin: asset.coin,
+            botTracked: asset.amount,
+            exchange: exchangeBalance.amount,
+            difference: difference.toFixed(8),
+            percentDifference: percentDiff.toFixed(2) + '%',
+            severity,
+            message: `Balance mismatch for ${asset.coin}: Bot tracks ${asset.amount}, exchange has ${exchangeBalance.amount}`
+          });
+        }
+      });
+      
+      // Check for coins in exchange that bot should be tracking (based on its coin list)
+      const botCoinList = bot.getCoinsArray();
+      const botTrackedCoinSet = new Set(botAssets.map(asset => asset.coin));
+      
+      botCoinList.forEach(coin => {
+        if (!botTrackedCoinSet.has(coin) && exchangeBalanceMap[coin] && exchangeBalanceMap[coin].amount > 0) {
+          discrepancies.push({
+            coin: coin,
+            botTracked: 0,
+            exchange: exchangeBalanceMap[coin].amount,
+            difference: exchangeBalanceMap[coin].amount,
+            severity: 'MEDIUM',
+            message: `Exchange has ${exchangeBalanceMap[coin].amount} ${coin} not tracked by bot, but in bot's coin list`
+          });
+        }
+      });
+      
+      // Log reconciliation results
+      if (discrepancies.length > 0) {
+        logMessage('WARNING', `Found ${discrepancies.length} balance discrepancies for bot ${bot.name}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Found ${discrepancies.length} balance discrepancies`, botId);
+      } else {
+        logMessage('INFO', `Bot ${bot.name} balances reconciled successfully with exchange`, bot.name);
+      }
+      
+      return { success: true, discrepancies, message: discrepancies.length > 0 ? 'Discrepancies found' : 'All balances match' };
+      
+    } catch (error) {
+      logMessage('ERROR', `Balance reconciliation failed: ${error.message}`);
+      await LogEntry.log(db, 'ERROR', `Balance reconciliation failed: ${error.message}`, botId);
+      return { success: false, error: error.message };
     }
   }
 }

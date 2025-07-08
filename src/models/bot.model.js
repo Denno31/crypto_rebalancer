@@ -35,6 +35,17 @@ module.exports = (sequelize, Sequelize) => {
       allowNull: true,
       field: 'initial_coin'
     },
+    allocationPercentage: {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      defaultValue: 100.0, // Default to 100% if not specified
+      field: 'allocation_percentage'
+    },
+    manualBudgetAmount: {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      field: 'manual_budget_amount'
+    },
     currentCoin: {
       type: Sequelize.STRING,
       allowNull: true,
@@ -86,10 +97,33 @@ module.exports = (sequelize, Sequelize) => {
       defaultValue: 0.0,
       field: 'min_acceptable_value'
     },
+    globalPeakValueInETH: {
+      type: Sequelize.FLOAT,
+      defaultValue: 0.0,
+      field: 'global_peak_value_eth'
+    },
+    commissionRate: {
+      type: Sequelize.FLOAT,
+      field: 'commission_rate',
+      allowNull: false,
+      defaultValue: 0.002  // Default 0.2% commission
+    },
+    totalCommissionsPaid: {
+      type: Sequelize.FLOAT,
+      field: 'total_commissions_paid',
+      allowNull: false,
+      defaultValue: 0.0
+    },
     priceSource: {
       type: Sequelize.STRING,
       defaultValue: "three_commas",
       field: 'price_source',
+      allowNull: true // Make it optional until migration adds the column
+    },
+    preferredStablecoin: {
+      type: Sequelize.STRING,
+      defaultValue: "USDT",
+      field: 'preferred_stablecoin',
       allowNull: true // Make it optional until migration adds the column
     }
   }, {
