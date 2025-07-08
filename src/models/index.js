@@ -1,23 +1,75 @@
 const dbConfig = require('../config/db.config.js');
 const Sequelize = require('sequelize');
 
-const sequelize = new Sequelize(
-  dbConfig.DB,
-  dbConfig.USER,
-  dbConfig.PASSWORD,
-  {
+// Connection configuration based on whether we're using a URL or individual params
+let sequelizeConfig;
+
+if (dbConfig.url) {
+  // Using connection string (DATABASE_URL)
+  console.log('Initializing Sequelize with connection string');
+  sequelizeConfig = {
+    dialect: dbConfig.dialect,
+    pool: dbConfig.pool,
+    logging: false, // Disable SQL query logging
+    retry: {
+      max: 5, // Maximum retry attempts
+      match: [
+        /ETIMEDOUT/,
+        /EHOSTUNREACH/,
+        /ECONNRESET/,
+        /ECONNREFUSED/,
+        /SequelizeConnectionError/,
+        /SequelizeConnectionRefusedError/,
+        /SequelizeHostNotFoundError/,
+        /SequelizeHostNotReachableError/,
+        /SequelizeInvalidConnectionError/,
+        /SequelizeConnectionTimedOutError/
+      ]
+    }
+  };
+  
+  // Add SSL configuration if specified
+  if (dbConfig.dialectOptions) {
+    sequelizeConfig.dialectOptions = dbConfig.dialectOptions;
+  }
+  
+  // Create Sequelize instance with URL
+  sequelize = new Sequelize(dbConfig.url, sequelizeConfig);
+} else {
+  // Using individual parameters
+  console.log(`Initializing Sequelize with host: ${dbConfig.HOST}`);
+  sequelizeConfig = {
     host: dbConfig.HOST,
     dialect: dbConfig.dialect,
     operatorsAliases: false,
-    pool: {
-      max: dbConfig.pool.max,
-      min: dbConfig.pool.min,
-      acquire: dbConfig.pool.acquire,
-      idle: dbConfig.pool.idle
-    },
-    logging: false // Disable SQL query logging
+    pool: dbConfig.pool,
+    logging: false, // Disable SQL query logging
+    retry: {
+      max: 5,
+      match: [
+        /ETIMEDOUT/,
+        /EHOSTUNREACH/,
+        /ECONNRESET/,
+        /ECONNREFUSED/,
+        /SequelizeConnectionError/
+      ]
+    }
+  };
+  
+  // Add SSL configuration if specified
+  if (dbConfig.dialectOptions) {
+    sequelizeConfig.dialectOptions = dbConfig.dialectOptions;
+    console.log('Using SSL for database connection');
   }
-);
+  
+  // Create Sequelize instance with individual parameters
+  sequelize = new Sequelize(
+    dbConfig.DB,
+    dbConfig.USER,
+    dbConfig.PASSWORD,
+    sequelizeConfig
+  );
+}
 
 const db = {};
 
