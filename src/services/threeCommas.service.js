@@ -438,22 +438,49 @@ class ThreeCommasService {
       
       const path = '/public/api/v2/smart_trades';
 
-      // Using the successful payload pattern but with dynamic values
-      // Determine the correct position type based on trade direction
-      // When converting to USDT (toCoin is USDT), we're selling the fromCoin
-      const positionType = toCoin === 'USDT' ? 'sell' : 'buy';
+      // For 3Commas, the pair format is BASE_QUOTE (e.g., USDT_ADA, ETH_BTC)
+      // We need to determine position type based on direction of the trade relative to the pair
       
-      // Use 10 units as in the working example, but make it configurable
-      // Start with a safer minimum that's known to work
-      const tradeAmount = 10;
+      // In 3Commas:
+      // - If trading from the second currency to the first (ADA → USDT in USDT_ADA pair), it's a "sell"
+      // - If trading from the first currency to the second (USDT → ADA in USDT_ADA pair), it's a "buy"
+      const firstCurrency = pair.split('_')[0]; // e.g., USDT in USDT_ADA
+      const positionType = fromCoin === firstCurrency ? 'buy' : 'sell';
+      
+      // Handle minimum trade requirements based on coin
+      // Different coins have different minimum sizes on exchanges
+      let tradeAmount = parseFloat(amount);
+      
+      // Define minimum amounts based on coin type
+      // These are estimates and should be refined based on exchange requirements
+      const minimumAmounts = {
+        'BTC': 0.0001,   // Minimum BTC trade size
+        'ETH': 0.001,    // Minimum ETH trade size
+        'ADA': 10,       // Minimum ADA trade size based on our successful test
+        'USDT': 10,      // Minimum USDT trade size
+        'DOGE': 50,      // DOGE has low value per coin, needs higher minimums
+        'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
+      };
+      
+      // Get the minimum for this coin, default to 10 if not specified
+      // 10 is our "known working value" from previous successful tests
+      const coinMinimum = minimumAmounts[fromCoin] || 10;
+      
+      // Check if requested amount is below the minimum
+      if (tradeAmount < coinMinimum) {
+        console.warn(`Warning: Trade amount ${tradeAmount} ${fromCoin} is below minimum ${coinMinimum}. Adjusting to minimum.`);
+        tradeAmount = coinMinimum;
+      }
+      
+      console.log(`Using trade amount: ${tradeAmount} ${fromCoin} (${positionType})`);
       
       const payload = {
-        account_id: accountId, // Use the provided accountId parameter
-        pair, // Use the constructed pair parameter (now correctly USDT_ADA format)
+        account_id: accountId,
+        pair,
         position: {
-          type: positionType, // Dynamically set to 'buy' or 'sell' based on direction
-          units: { value: tradeAmount }, // Use the amount directly without converting to string
-          total: tradeAmount, // Include total as in the working version
+          type: positionType,
+          units: { value: tradeAmount },
+          total: tradeAmount, // Total should match units for market orders
           order_type: 'market'
         },
         take_profit: {
