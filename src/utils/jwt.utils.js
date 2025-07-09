@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
  * @param {Number} expiresIn - Token expiry time in seconds
  * @returns {String} JWT token
  */
-const generateToken = (userData, expiresIn = 1800) => { // Default to 30 minutes
+const generateToken = (userData, expiresIn = 2592000) => { // Default to 30 days (1 month)
   return jwt.sign(
     {
       sub: userData.id,
