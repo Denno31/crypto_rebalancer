@@ -107,6 +107,17 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, data]
    */
   async request(entity, action = '', params = {}, method = 'get') {
+    // Log partial API key for debugging (only first 4 and last 4 characters)
+    if (this.apiKey && this.apiKey.length > 8) {
+      const visiblePrefix = this.apiKey.substring(0, 4);
+      const visibleSuffix = this.apiKey.substring(this.apiKey.length - 4);
+      const maskedPortion = '*'.repeat(Math.max(0, this.apiKey.length - 8));
+      console.log(`Using API key: ${visiblePrefix}${maskedPortion}${visibleSuffix}`);
+    } else if (this.apiKey) {
+      console.log(`Using API key: ${this.apiKey.substring(0, 2)}****`);
+    } else {
+      console.log('API key is not defined!');
+    }
     // Check if this entity+action is in our API methods mapping (like Python)
     let httpMethod = method.toUpperCase();
     let apiPath = '';
@@ -394,13 +405,26 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, tradeData]
    */
   async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2, mode = 'live') {
+    console.log('Executing trade with API credentials:');
+    // Log partial API key for debugging (only first 4 and last 4 characters)
+    if (this.apiKey && this.apiKey.length > 8) {
+      const visiblePrefix = this.apiKey.substring(0, 4);
+      const visibleSuffix = this.apiKey.substring(this.apiKey.length - 4);
+      const maskedPortion = '*'.repeat(Math.max(0, this.apiKey.length - 8));
+      console.log(`API key: ${visiblePrefix}${maskedPortion}${visibleSuffix}`);
+    } else if (this.apiKey) {
+      console.log(`API key: ${this.apiKey.substring(0, 2)}****`);
+    } else {
+      console.log('API key is not defined!');
+    }
     try {
       // Ensure account ID is a string
       accountId = String(accountId);
       
       // Format trading pair - 3Commas expects BASE_QUOTE format
-      // Example: BTC_USDT means buy/sell BTC with USDT
-      const pair = `${fromCoin}_${toCoin}`;
+      // For 3Commas smart_trades_v2 API, the format needs to be USDT_ADA (base currency first)
+      // This is different from the standard BTC_USDT format typically used in other APIs
+      const pair = `${toCoin}_${fromCoin}`;
       
       console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
       
@@ -412,18 +436,63 @@ class ThreeCommasService {
         console.log('⚠️ Using PAPER TRADING mode - no real funds will be used');
       }
       
+      const path = '/public/api/v2/smart_trades';
+
+      // For 3Commas, the pair format is BASE_QUOTE (e.g., USDT_ADA, ETH_BTC)
+      // We need to determine position type based on direction of the trade relative to the pair
+      
+      // In 3Commas:
+      // - If trading from the second currency to the first (ADA → USDT in USDT_ADA pair), it's a "sell"
+      // - If trading from the first currency to the second (USDT → ADA in USDT_ADA pair), it's a "buy"
+      const firstCurrency = pair.split('_')[0]; // e.g., USDT in USDT_ADA
+      const positionType = fromCoin === firstCurrency ? 'buy' : 'sell';
+      
+      // Handle minimum trade requirements based on coin
+      // Different coins have different minimum sizes on exchanges
+      let tradeAmount = parseFloat(amount);
+      
+      // Define minimum amounts based on coin type
+      // These are estimates and should be refined based on exchange requirements
+      const minimumAmounts = {
+        'BTC': 0.0001,   // Minimum BTC trade size
+        'ETH': 0.001,    // Minimum ETH trade size
+        'ADA': 10,       // Minimum ADA trade size based on our successful test
+        'USDT': 10,      // Minimum USDT trade size
+        'DOGE': 50,      // DOGE has low value per coin, needs higher minimums
+        'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
+      };
+      
+      // Get the minimum for this coin, default to 10 if not specified
+      // 10 is our "known working value" from previous successful tests
+      const coinMinimum = minimumAmounts[fromCoin] || 10;
+      
+      // Check if requested amount is below the minimum
+      if (tradeAmount < coinMinimum) {
+        console.warn(`Warning: Trade amount ${tradeAmount} ${fromCoin} is below minimum ${coinMinimum}. Adjusting to minimum.`);
+        tradeAmount = coinMinimum;
+      }
+      
+      console.log(`Using trade amount: ${tradeAmount} ${fromCoin} (${positionType})`);
+      
       const payload = {
         account_id: accountId,
         pair,
         position: {
-          type: 'buy',
-          units: {
-            value: String(amount)
-          },
+          type: positionType,
+          units: { value: tradeAmount },
+          total: tradeAmount, // Total should match units for market orders
           order_type: 'market'
         },
-        demo: isPaperTrading // Set demo flag for paper trading
+        take_profit: {
+          enabled: false
+        },
+        stop_loss: {
+          enabled: false
+        },
+        // Always include the demo flag with explicit boolean value
+        demo: isPaperTrading === true
       };
+    
       
       // Add take profit settings if enabled
       if (useTakeProfit && takeProfitPercentage > 0) {
@@ -442,26 +511,43 @@ class ThreeCommasService {
         };
       }
       
-      // Use the v1 API with create_smart_trade action - this is what works in Python
-      const [error, response] = await this.request(
-        'smart_trades', 
-        'create_smart_trade',
-        payload, 
-        'post'
-      );
+      // Generate signature AFTER all payload modifications are complete
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto
+        .createHmac('sha256', this.apiSecret)
+        .update(path + bodyString)
+        .digest('hex');
       
-      if (error) {
-        console.error('Error executing trade:', error);
-        return [error, null];
+      // Use the v1 API with create_smart_trade action - this is what works in Python
+      console.log('Sending request with:', {
+        path,
+        pair,
+        account_id: payload.account_id,
+        amount: payload.position.units.value,
+        demo: payload.demo,
+        signature_base: path + bodyString.substring(0, 20) + '...' // Log part of signature base for debugging
+      })
+      const response = await axios.post(this.baseUrl + path, payload, {
+        headers: {
+          'APIKEY': this.apiKey,
+          'Signature': signature,
+          'Content-Type': 'application/json',
+          'Accept-Encoding': 'identity' // Add this header to match the Python client
+        }
+      })
+      console.log({response})
+      if (response.data.error) {
+        console.error('Error executing trade:', response.data.error);
+        return [response.data.error, null];
       }
       
       return [null, {
         success: true,
-        tradeId: response.id,
-        status: response.status,
-        pair: response.pair,
-        createdAt: response.created_at,
-        raw: response
+        tradeId: response.data.id,
+        status: response.data.status,
+        pair: response.data.pair,
+        createdAt: response.data.created_at,
+        raw: response.data
       }];
     } catch (error) {
       console.error(`Error in executeTrade: ${error.message}`);

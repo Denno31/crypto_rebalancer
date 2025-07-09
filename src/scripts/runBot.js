@@ -5,6 +5,7 @@
  * node src/scripts/runBot.js
  * 
  * This script will automatically load and run all enabled bots from the database
+ * and periodically check for newly enabled bots
  */
 
 require('dotenv').config();
@@ -38,6 +39,34 @@ async function run() {
     }
     
     console.log('All bots started successfully. Press Ctrl+C to stop.');
+    
+    // Set up periodic check for newly enabled bots
+    const checkNewBotsInterval = 2 * 60 * 1000; // Check every 2 minutes
+    console.log(`Will check for newly enabled bots every ${checkNewBotsInterval/60000} minutes`);
+    
+    // Start the periodic check interval
+    setInterval(async () => {
+      try {
+        // Get current list of enabled bots
+        const currentEnabledBots = await db.bot.findAll({
+          where: { enabled: true }
+        });
+        
+        // Check for bots that are enabled but not active
+        for (const bot of currentEnabledBots) {
+          if (!botService.activeBots[bot.id]) {
+            console.log(`Found newly enabled bot ${bot.id}: ${bot.name}. Starting it...`);
+            try {
+              await botService.startBot(bot.id);
+            } catch (error) {
+              console.error(`Failed to start newly enabled bot ${bot.id}: ${error.message}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error checking for newly enabled bots:', error);
+      }
+    }, checkNewBotsInterval);
     
     // Keep the process running
     process.on('SIGINT', async () => {

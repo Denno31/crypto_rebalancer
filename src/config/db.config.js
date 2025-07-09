@@ -59,13 +59,15 @@ if (process.env.DATABASE_URL) {
     console.log(`Using connection string with host: ${host} and port: ${DIGITAL_OCEAN_PORT}`);
   }
   
-  // Enable SSL for cloud providers
-  if (
-    process.env.NODE_ENV === 'production' || 
+  // Enable SSL for cloud providers, but not for localhost unless explicitly enabled
+  const isLocalHost = config.HOST === 'localhost' || config.HOST === '127.0.0.1';
+  const needsSSL = 
     process.env.ENABLE_SSL === 'true' ||
     process.env.DB_HOST?.includes('digitalocean.com') ||
-    process.env.DB_HOST?.match(/\d+\.\d+\.\d+\.\d+/) // IP address pattern
-  ) {
+    process.env.DB_HOST?.match(/\d+\.\d+\.\d+\.\d+/) || // IP address pattern
+    (process.env.NODE_ENV === 'production' && !isLocalHost); // Production but not localhost
+  
+  if (needsSSL) {
     console.log('Detected possible cloud host - enabling SSL');
     config.dialectOptions = {
       ssl: {
@@ -73,6 +75,8 @@ if (process.env.DATABASE_URL) {
         rejectUnauthorized: false
       }
     };
+  } else if (isLocalHost) {
+    console.log('Local database detected - SSL disabled');
   }
 }
 

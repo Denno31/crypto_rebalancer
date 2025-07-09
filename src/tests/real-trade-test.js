@@ -96,10 +96,17 @@ async function testRealTrade() {
     console.log(chalk.green(`✅ Found bot: ${activeBot.name} (ID: ${activeBot.id})`));
   
     // Get API config for this bot's account
+    console.log('Retrieving API config from database...');
     const apiConfig = await ApiConfig.findOne();
     if (!apiConfig) {
       throw new Error('3Commas API configuration not found in database');
     }
+    
+    console.log('API Config found in database:');
+    console.log(`  • ID: ${apiConfig.id}`);
+    console.log(`  • Provider: ${apiConfig.provider || 'Not specified'}`);
+    console.log(`  • Updated at: ${apiConfig.updated_at || apiConfig.updatedAt}`);
+    console.log(`  • API Key Prefix: ${apiConfig.apiKey.substring(0, 4)}...`);
     
     const apiKey = apiConfig.apiKey;
     const apiSecret = apiConfig.apiSecret;
@@ -111,11 +118,14 @@ async function testRealTrade() {
     console.log(chalk.green('✅ API credentials retrieved from database'));
     
     // Create ThreeCommasService instance with the API credentials
+    console.log('Creating ThreeCommasService with the retrieved API credentials...');
     const threeCommasService = new ThreeCommasService(
       apiConfig.apiKey,
       apiConfig.apiSecret,
       { requestTimeout: 10000 }
     );
+    
+    console.log(`Service created with API Key prefix: ${apiConfig.apiKey.substring(0, 4)}...`);
 
     console.log(chalk.cyan('\nStep 1: Using bot configuration for test trade...'));
     // Use the active bot's account ID
