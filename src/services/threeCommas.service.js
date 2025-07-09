@@ -422,8 +422,9 @@ class ThreeCommasService {
       accountId = String(accountId);
       
       // Format trading pair - 3Commas expects BASE_QUOTE format
-      // Example: BTC_USDT means buy/sell BTC with USDT
-      const pair = `${fromCoin}_${toCoin}`;
+      // For 3Commas smart_trades_v2 API, the format needs to be USDT_ADA (base currency first)
+      // This is different from the standard BTC_USDT format typically used in other APIs
+      const pair = `${toCoin}_${fromCoin}`;
       
       console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
       
@@ -435,18 +436,36 @@ class ThreeCommasService {
         console.log('⚠️ Using PAPER TRADING mode - no real funds will be used');
       }
       
+      const path = '/public/api/v2/smart_trades';
+
+      // Using the successful payload pattern but with dynamic values
+      // Determine the correct position type based on trade direction
+      // When converting to USDT (toCoin is USDT), we're selling the fromCoin
+      const positionType = toCoin === 'USDT' ? 'sell' : 'buy';
+      
+      // Use 10 units as in the working example, but make it configurable
+      // Start with a safer minimum that's known to work
+      const tradeAmount = 10;
+      
       const payload = {
-        account_id: accountId,
-        pair,
+        account_id: accountId, // Use the provided accountId parameter
+        pair, // Use the constructed pair parameter (now correctly USDT_ADA format)
         position: {
-          type: 'buy',
-          units: {
-            value: String(amount)
-          },
+          type: positionType, // Dynamically set to 'buy' or 'sell' based on direction
+          units: { value: tradeAmount }, // Use the amount directly without converting to string
+          total: tradeAmount, // Include total as in the working version
           order_type: 'market'
         },
-        demo: isPaperTrading // Set demo flag for paper trading
+        take_profit: {
+          enabled: false
+        },
+        stop_loss: {
+          enabled: false
+        },
+        // Always include the demo flag with explicit boolean value
+        demo: isPaperTrading === true
       };
+    
       
       // Add take profit settings if enabled
       if (useTakeProfit && takeProfitPercentage > 0) {
@@ -465,26 +484,43 @@ class ThreeCommasService {
         };
       }
       
-      // Use the v1 API with create_smart_trade action - this is what works in Python
-      const [error, response] = await this.request(
-        'smart_trades', 
-        'create_smart_trade',
-        payload, 
-        'post'
-      );
+      // Generate signature AFTER all payload modifications are complete
+      const bodyString = JSON.stringify(payload);
+      const signature = crypto
+        .createHmac('sha256', this.apiSecret)
+        .update(path + bodyString)
+        .digest('hex');
       
-      if (error) {
-        console.error('Error executing trade:', error);
-        return [error, null];
+      // Use the v1 API with create_smart_trade action - this is what works in Python
+      console.log('Sending request with:', {
+        path,
+        pair,
+        account_id: payload.account_id,
+        amount: payload.position.units.value,
+        demo: payload.demo,
+        signature_base: path + bodyString.substring(0, 20) + '...' // Log part of signature base for debugging
+      })
+      const response = await axios.post(this.baseUrl + path, payload, {
+        headers: {
+          'APIKEY': this.apiKey,
+          'Signature': signature,
+          'Content-Type': 'application/json',
+          'Accept-Encoding': 'identity' // Add this header to match the Python client
+        }
+      })
+      console.log({response})
+      if (response.data.error) {
+        console.error('Error executing trade:', response.data.error);
+        return [response.data.error, null];
       }
       
       return [null, {
         success: true,
-        tradeId: response.id,
-        status: response.status,
-        pair: response.pair,
-        createdAt: response.created_at,
-        raw: response
+        tradeId: response.data.id,
+        status: response.data.status,
+        pair: response.data.pair,
+        createdAt: response.data.created_at,
+        raw: response.data
       }];
     } catch (error) {
       console.error(`Error in executeTrade: ${error.message}`);
