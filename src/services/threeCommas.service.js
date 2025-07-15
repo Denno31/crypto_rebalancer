@@ -41,6 +41,11 @@ class ThreeCommasService {
       'DOGE': 50,      // DOGE has low value per coin, needs higher minimums
       'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
     };
+    
+    // Dynamic cache for learning which parameter order works for each trading pair
+    // Format: { 'USDT_COIN': { order: 'standard'|'reversed', positionType: 'buy'|'sell' } }
+    // This is learned at runtime rather than hardcoded
+    this.pairPreferenceCache = {};
   }
 
   /**
@@ -412,10 +417,15 @@ class ThreeCommasService {
    * @param {Boolean} useTakeProfit - Whether to use take profit
    * @param {Number} takeProfitPercentage - Take profit percentage
    * @param {String} mode - Trading mode (live or paper)
-   * @param {Boolean} isIndirectTrade - Whether this is an indirect trade (used to prevent infinite recursion)
-   * @returns {Promise<Array>} - [error, tradeData]
+   * @param {Boolean} isIndirectTrade - Whether this is part of a multi-step trade via USDT
+   * @param {String} [forcedPositionType] - Optional parameter to force a specific position type ('buy' or 'sell')
+   * @returns {Promise<Array>} - [error, response]
    */
-  async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2, mode = 'live', isIndirectTrade = false) {
+  async executeTrade(
+    accountId, fromCoin, toCoin, amount, 
+    useTakeProfit = false, takeProfitPercentage = 2.0, 
+    mode = 'live', isIndirectTrade = false, forcedPositionType = null
+  ) {
     
     console.log('Executing trade with API credentials:');
     // Log partial API key for debugging (only first 4 and last 4 characters)
@@ -433,10 +443,38 @@ class ThreeCommasService {
       // Ensure account ID is a string
       accountId = String(accountId);
       
-      // Format trading pair - 3Commas expects BASE_QUOTE format
-      // For 3Commas smart_trades_v2 API, the format needs to be USDT_ADA (base currency first)
-      // This is different from the standard BTC_USDT format typically used in other APIs
-      const pair = `${toCoin}_${fromCoin}`;
+      // Determine position type and appropriate pair format
+      // For 3Commas, we need to maintain consistency between position type and pair format
+      let positionType;
+      let pair;
+      
+      // If a position type is forced, use it to determine the pair format
+      if (forcedPositionType && ['buy', 'sell'].includes(forcedPositionType)) {
+        positionType = forcedPositionType;
+        console.log(`Using forced position type: ${positionType} (overriding automatic determination)`);
+        
+        // Format pair based on the forced position type
+        if (positionType === 'buy') {
+          // For buy operations, the pair should be fromCoin_toCoin
+          // Example: USDT_ADA for buying ADA with USDT
+          pair = `${fromCoin}_${toCoin}`;
+        } else {
+          // For sell operations, the pair should be toCoin_fromCoin
+          // Example: USDT_ADA for selling ADA for USDT
+          pair = `${toCoin}_${fromCoin}`;
+        }
+        console.log(`Using pair format ${pair} for ${positionType} operation`);
+      } else {
+        // No forced position type - use default pair format and determine position type based on it
+        // By default, we use toCoin_fromCoin format (which is typically a sell operation)
+        pair = `${toCoin}_${fromCoin}`;
+        
+        // Now determine position type based on the pair format
+        // The first currency in the pair is considered the base currency
+        const firstCurrency = pair.split('_')[0]; // e.g., USDT in USDT_ADA
+        positionType = fromCoin === firstCurrency ? 'buy' : 'sell';
+        console.log(`Automatically determined position type: ${positionType} based on pair format ${pair}`);
+      }
       
       console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
       
@@ -603,16 +641,14 @@ class ThreeCommasService {
         }
         
         console.log(`Step 2: Buying ${toCoin} with ${secondStepAmount} ${intermediateCoin}`);
+        console.log(`Using position type 'buy' for second step (USDT → destination coin)`);
         
         let trade2;
         try {
-          // IMPORTANT: Reverse the parameter order for USDT → destination coin trades
-          // Our testing revealed that 3Commas API expects (toCoin, USDT) instead of (USDT, toCoin)
-          // when trading from USDT to another coin
-          console.log(`Using reversed parameter order for second step (${toCoin}, ${intermediateCoin}) instead of (${intermediateCoin}, ${toCoin})`);
-          
+          // Execute second step with explicit BUY position type
           const [error2, tradeResult] = await this.executeTrade(
-            accountId, toCoin, intermediateCoin, secondStepAmount, useTakeProfit, takeProfitPercentage, mode, true
+            accountId, intermediateCoin, toCoin, secondStepAmount, 
+            useTakeProfit, takeProfitPercentage, mode, true, 'buy'
           );
           
           if (error2) {
@@ -666,14 +702,7 @@ class ThreeCommasService {
       
       const path = '/public/api/v2/smart_trades';
 
-      // For 3Commas, the pair format is BASE_QUOTE (e.g., USDT_ADA, ETH_BTC)
-      // We need to determine position type based on direction of the trade relative to the pair
-      
-      // In 3Commas:
-      // - If trading from the second currency to the first (ADA → USDT in USDT_ADA pair), it's a "sell"
-      // - If trading from the first currency to the second (USDT → ADA in USDT_ADA pair), it's a "buy"
-      const firstCurrency = pair.split('_')[0]; // e.g., USDT in USDT_ADA
-      const positionType = fromCoin === firstCurrency ? 'buy' : 'sell';
+      // Position type and pair format have already been determined
       
       // Handle minimum trade requirements based on coin
       // Different coins have different minimum sizes on exchanges
@@ -930,5 +959,6 @@ class ThreeCommasService {
     }
   }
 }
+
 
 module.exports = ThreeCommasService;

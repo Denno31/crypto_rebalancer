@@ -37,7 +37,7 @@ const config = {
   
   // Currency pairs to use for testing (adjust based on your account)
   fromCoin: 'ADA',
-  toCoin: 'SHIB',
+  toCoin: 'XRP',
   
   // Whether to use take profit for the test trade
   useTakeProfit: false,
