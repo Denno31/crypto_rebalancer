@@ -601,17 +601,38 @@ class ThreeCommasService {
         // We need to extract this from the trade data
         let resultAmount;
         try {
-          // The amount we get depends on the trade direction and details in the response
-          if (statusData.raw.completed_safety_orders_data && statusData.raw.completed_safety_orders_data.length > 0) {
+          // First try to use entered_amount from data (most reliable field)
+          // This is the actual amount that was acquired in the trade
+          if (statusData.raw?.data?.entered_amount) {
+            resultAmount = parseFloat(statusData.raw.data.entered_amount);
+            console.log(`Using entered_amount field: ${resultAmount} ${intermediateCoin}`);
+          }
+          // Use entered_total if available (this is what we got in USDT)
+          else if (statusData.raw?.data?.entered_total) {
+            resultAmount = parseFloat(statusData.raw.data.entered_total);
+            console.log(`Using entered_total field: ${resultAmount} ${intermediateCoin}`);
+          }
+          // Fall back to other methods if the primary ones aren't available
+          else if (statusData.raw.position && statusData.raw.position.total && statusData.raw.position.total.value) {
+            resultAmount = parseFloat(statusData.raw.position.total.value);
+            console.log(`Using position.total.value: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else if (statusData.raw.completed_safety_orders_data && statusData.raw.completed_safety_orders_data.length > 0) {
             resultAmount = parseFloat(statusData.raw.completed_safety_orders_data[0].done_average_price) * 
                           parseFloat(statusData.raw.completed_safety_orders_data[0].done_quantity);
-          } else if (statusData.raw.completed_manual_safety_orders && statusData.raw.completed_manual_safety_orders.length > 0) {
+            console.log(`Using completed_safety_orders calculation: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else if (statusData.raw.completed_manual_safety_orders && statusData.raw.completed_manual_safety_orders.length > 0) {
             resultAmount = parseFloat(statusData.raw.completed_manual_safety_orders[0].done_average_price) * 
                           parseFloat(statusData.raw.completed_manual_safety_orders[0].done_quantity);
-          } else if (statusData.raw.position && statusData.raw.position.done_quantity && statusData.raw.position.done_average_price) {
+            console.log(`Using completed_manual_safety_orders calculation: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else if (statusData.raw.position && statusData.raw.position.done_quantity && statusData.raw.position.done_average_price) {
             resultAmount = parseFloat(statusData.raw.position.done_quantity) * 
                           parseFloat(statusData.raw.position.done_average_price);
-          } else {
+            console.log(`Using position calculation: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else {
             // If we can't determine the exact amount, estimate it (less accurate)
             // Use the amount we sent minus an estimated fee
             resultAmount = amount * 0.998; // Assuming 0.2% fee
