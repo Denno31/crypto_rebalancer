@@ -327,7 +327,7 @@ class EnhancedSwapService {
       );
       
       // Use bot's initialAmount setting if available, or a configurable default
-      const amount = bot.initialAmount || systemConfig.defaultInitialAmount || 0.01;
+      const amount = bot.manualBudgetAmount || systemConfig.defaultInitialAmount || 0.01;
       
       logMessage('INFO', `Initializing ${coin} with current price ${price} ${referenceCoin} and amount ${amount}`, bot.name);
       await LogEntry.log(db, 'INFO', `Initializing ${coin} with current price ${price} ${referenceCoin} and amount ${amount}`, bot.id);
