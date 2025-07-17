@@ -32,15 +32,30 @@ class ThreeCommasService {
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries || 3;
     
+    // Set the preferred stablecoin for intermediate trades (default: USDT)
+    this.preferredStablecoin = options.preferredStablecoin || 'USDT';
+    
+    // Log the preferred stablecoin being used
+    console.log(`Using ${this.preferredStablecoin} as the preferred stablecoin for intermediate trades`);
+    
     // Define minimum amounts based on coin type as a class property
     this.minimumAmounts = {
       'BTC': 0.0001,   // Minimum BTC trade size
       'ETH': 0.001,    // Minimum ETH trade size
       'ADA': 10,       // Minimum ADA trade size based on our successful test
       'USDT': 10,      // Minimum USDT trade size
+      'USDC': 10,      // Common stablecoin
+      'DAI': 10,       // Common stablecoin
+      'BUSD': 10,      // Common stablecoin
       'DOGE': 50,      // DOGE has low value per coin, needs higher minimums
       'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
     };
+    
+    // Ensure the preferred stablecoin has a minimum amount defined
+    if (!this.minimumAmounts[this.preferredStablecoin]) {
+      console.log(`Setting default minimum amount for ${this.preferredStablecoin} to 10`);
+      this.minimumAmounts[this.preferredStablecoin] = 10; // Default for stablecoins
+    }
     
     // Dynamic cache for learning which parameter order works for each trading pair
     // Format: { 'USDT_COIN': { order: 'standard'|'reversed', positionType: 'buy'|'sell' } }
@@ -412,21 +427,16 @@ class ThreeCommasService {
    * Execute a trade (swap) between two coins using 3Commas Smart Trade API
    * @param {String} accountId - 3Commas account ID
    * @param {String} fromCoin - Coin to sell (e.g. BTC)
-   * @param {String} toCoin - Coin to buy (e.g. ETH)
-   * @param {Number} amount - Amount of fromCoin to sell
-   * @param {Boolean} useTakeProfit - Whether to use take profit
-   * @param {Number} takeProfitPercentage - Take profit percentage
-   * @param {String} mode - Trading mode (live or paper)
-   * @param {Boolean} isIndirectTrade - Whether this is part of a multi-step trade via USDT
-   * @param {String} [forcedPositionType] - Optional parameter to force a specific position type ('buy' or 'sell')
-   * @returns {Promise<Array>} - [error, response]
-   */
-  async executeTrade(
-    accountId, fromCoin, toCoin, amount, 
-    useTakeProfit = false, takeProfitPercentage = 2.0, 
-    mode = 'live', isIndirectTrade = false, forcedPositionType = null
-  ) {
     
+    // Determine position type and appropriate pair format
+    // For 3Commas, we need to maintain consistency between position type and pair format
+    let positionType;
+    let pair;
+    
+    // If a position type is forced, use it to determine the pair format
+    if (forcedPositionType && ['buy', 'sell'].includes(forcedPositionType)) {
+      positionType = forcedPositionType;
+      console.log(`Using forced position type: ${positionType} (overriding automatic determination)`);
     console.log('Executing trade with API credentials:');
     // Log partial API key for debugging (only first 4 and last 4 characters)
     if (this.apiKey && this.apiKey.length > 8) {
@@ -486,17 +496,19 @@ class ThreeCommasService {
         console.log('⚠️ Using PAPER TRADING mode - no real funds will be used');
       }
       
-      // Always use a two-step trade through USDT as an intermediate currency
+      // Always use a two-step trade through a stablecoin as an intermediate currency
       // But only if this isn't already an indirect trade (to prevent infinite recursion)
-      // And only if neither fromCoin nor toCoin is already USDT (to avoid unnecessary trades)
-      if (!isIndirectTrade && fromCoin !== 'USDT' && toCoin !== 'USDT') {
-        console.log(`Using USDT as an intermediate currency for ${fromCoin} → ${toCoin} trade`);
-        const intermediateCoin = 'USDT'; // Default intermediate coin
+      // And only if neither fromCoin nor toCoin is already the preferred stablecoin (to avoid unnecessary trades)
+      // Default to USDT if no preferred stablecoin is provided
+      const preferredStablecoin = this.preferredStablecoin || 'USDT';
+      if (!isIndirectTrade && fromCoin !== preferredStablecoin && toCoin !== preferredStablecoin) {
+        console.log(`Using ${preferredStablecoin} as an intermediate currency for ${fromCoin} → ${toCoin} trade`);
+        const intermediateCoin = preferredStablecoin;
         
-        // Step 1: Sell fromCoin to get USDT
+        // Step 1: Sell fromCoin to get stablecoin
         console.log(`Step 1: Selling ${fromCoin} → ${intermediateCoin}`);
         const [error1, trade1] = await this.executeTrade(
-          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true
+          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true, null, preferredStablecoin
         );
         
         if (error1) {
@@ -646,7 +658,7 @@ class ThreeCommasService {
         
         console.log(`First trade resulted in approximately ${resultAmount} ${intermediateCoin}`);
         
-        // Step 2: Buy toCoin with the USDT from step 1
+        // Step 2: Buy toCoin with the stablecoin from step 1
         // Ensure we have a valid number for the amount and apply minimum trade amount requirements
         let secondStepAmount = parseFloat(resultAmount);
         if (isNaN(secondStepAmount) || secondStepAmount <= 0) {
@@ -662,14 +674,14 @@ class ThreeCommasService {
         }
         
         console.log(`Step 2: Buying ${toCoin} with ${secondStepAmount} ${intermediateCoin}`);
-        console.log(`Using position type 'buy' for second step (USDT → destination coin)`);
+        console.log(`Using position type 'buy' for second step (${intermediateCoin} → destination coin)`);
         
         let trade2;
         try {
           // Execute second step with explicit BUY position type
           const [error2, tradeResult] = await this.executeTrade(
             accountId, intermediateCoin, toCoin, secondStepAmount, 
-            useTakeProfit, takeProfitPercentage, mode, true, 'buy'
+            useTakeProfit, takeProfitPercentage, mode, true, 'buy', preferredStablecoin
           );
           
           if (error2) {
@@ -686,8 +698,8 @@ class ThreeCommasService {
               try {
                 const [balanceErr, balanceData] = await this.request('accounts', `${accountId}/balance_chart_data`, { date_from: new Date().toISOString() });
                 if (!balanceErr && balanceData) {
-                  const usdtBalance = balanceData.currencies.find(c => c.code === intermediateCoin);
-                  console.log(`Current ${intermediateCoin} balance:`, usdtBalance);
+                  const stablecoinBalance = balanceData.currencies.find(c => c.code === intermediateCoin);
+                  console.log(`Current ${intermediateCoin} balance:`, stablecoinBalance);
                 }
               } catch (innerErr) {
                 console.error('Could not fetch balance data:', innerErr.message);
