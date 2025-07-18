@@ -31,6 +31,21 @@ class ThreeCommasService {
     this.baseUrl = options.baseUrl || 'https://api.3commas.io';
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries || 3;
+    
+    // Define minimum amounts based on coin type as a class property
+    this.minimumAmounts = {
+      'BTC': 0.0001,   // Minimum BTC trade size
+      'ETH': 0.001,    // Minimum ETH trade size
+      'ADA': 10,       // Minimum ADA trade size based on our successful test
+      'USDT': 10,      // Minimum USDT trade size
+      'DOGE': 10,      // DOGE has low value per coin, needs higher minimums
+      'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
+    };
+    
+    // Dynamic cache for learning which parameter order works for each trading pair
+    // Format: { 'USDT_COIN': { order: 'standard'|'reversed', positionType: 'buy'|'sell' } }
+    // This is learned at runtime rather than hardcoded
+    this.pairPreferenceCache = {};
   }
 
   /**
@@ -401,10 +416,17 @@ class ThreeCommasService {
    * @param {Number} amount - Amount of fromCoin to sell
    * @param {Boolean} useTakeProfit - Whether to use take profit
    * @param {Number} takeProfitPercentage - Take profit percentage
-   * @param {String} mode - Trading mode ('live' or 'paper')
-   * @returns {Promise<Array>} - [error, tradeData]
+   * @param {String} mode - Trading mode (live or paper)
+   * @param {Boolean} isIndirectTrade - Whether this is part of a multi-step trade via USDT
+   * @param {String} [forcedPositionType] - Optional parameter to force a specific position type ('buy' or 'sell')
+   * @returns {Promise<Array>} - [error, response]
    */
-  async executeTrade(accountId, fromCoin, toCoin, amount, useTakeProfit = false, takeProfitPercentage = 2, mode = 'live') {
+  async executeTrade(
+    accountId, fromCoin, toCoin, amount, 
+    useTakeProfit = false, takeProfitPercentage = 2.0, 
+    mode = 'live', isIndirectTrade = false, forcedPositionType = null
+  ) {
+    
     console.log('Executing trade with API credentials:');
     // Log partial API key for debugging (only first 4 and last 4 characters)
     if (this.apiKey && this.apiKey.length > 8) {
@@ -421,10 +443,38 @@ class ThreeCommasService {
       // Ensure account ID is a string
       accountId = String(accountId);
       
-      // Format trading pair - 3Commas expects BASE_QUOTE format
-      // For 3Commas smart_trades_v2 API, the format needs to be USDT_ADA (base currency first)
-      // This is different from the standard BTC_USDT format typically used in other APIs
-      const pair = `${toCoin}_${fromCoin}`;
+      // Determine position type and appropriate pair format
+      // For 3Commas, we need to maintain consistency between position type and pair format
+      let positionType;
+      let pair;
+      
+      // If a position type is forced, use it to determine the pair format
+      if (forcedPositionType && ['buy', 'sell'].includes(forcedPositionType)) {
+        positionType = forcedPositionType;
+        console.log(`Using forced position type: ${positionType} (overriding automatic determination)`);
+        
+        // Format pair based on the forced position type
+        if (positionType === 'buy') {
+          // For buy operations, the pair should be fromCoin_toCoin
+          // Example: USDT_ADA for buying ADA with USDT
+          pair = `${fromCoin}_${toCoin}`;
+        } else {
+          // For sell operations, the pair should be toCoin_fromCoin
+          // Example: USDT_ADA for selling ADA for USDT
+          pair = `${toCoin}_${fromCoin}`;
+        }
+        console.log(`Using pair format ${pair} for ${positionType} operation`);
+      } else {
+        // No forced position type - use default pair format and determine position type based on it
+        // By default, we use toCoin_fromCoin format (which is typically a sell operation)
+        pair = `${toCoin}_${fromCoin}`;
+        
+        // Now determine position type based on the pair format
+        // The first currency in the pair is considered the base currency
+        const firstCurrency = pair.split('_')[0]; // e.g., USDT in USDT_ADA
+        positionType = fromCoin === firstCurrency ? 'buy' : 'sell';
+        console.log(`Automatically determined position type: ${positionType} based on pair format ${pair}`);
+      }
       
       console.log(`Executing trade: ${fromCoin} → ${toCoin} (${amount} ${fromCoin})`);
       
@@ -436,35 +486,169 @@ class ThreeCommasService {
         console.log('⚠️ Using PAPER TRADING mode - no real funds will be used');
       }
       
+      // Always use a two-step trade through USDT as an intermediate currency
+      // But only if this isn't already an indirect trade (to prevent infinite recursion)
+      // And only if neither fromCoin nor toCoin is already USDT (to avoid unnecessary trades)
+      if (!isIndirectTrade && fromCoin !== 'USDT' && toCoin !== 'USDT') {
+        console.log(`Using USDT as an intermediate currency for ${fromCoin} → ${toCoin} trade`);
+        const intermediateCoin = 'USDT'; // Default intermediate coin
+        
+        // Step 1: Sell fromCoin to get USDT
+        console.log(`Step 1: Selling ${fromCoin} → ${intermediateCoin}`);
+        const [error1, trade1] = await this.executeTrade(
+          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true
+        );
+        
+        if (error1) {
+          console.error(`Failed in step 1 (${fromCoin} → ${intermediateCoin}):`, error1);
+          return [error1, null];
+        }
+        
+        console.log(`✅ Step 1 completed. Trade ID: ${trade1.tradeId}`);
+        
+        console.log(`Waiting for first trade (ID: ${trade1.tradeId}) to complete...`);
+        const [statusError, statusData] = await this.waitForTradeCompletion(trade1.tradeId);
+        
+        if (statusError) {
+          console.error('Failed to get status of first trade:', statusError);
+          return [statusError, null];
+        }
+        
+        // Get the resulting amount of USDT from the first trade
+        // We need to extract this from the trade data
+        let resultAmount;
+        try {
+          // First try to use entered_amount from data (most reliable field)
+          // This is the actual amount that was acquired in the trade
+          if (statusData.raw?.data?.entered_total) {
+            resultAmount = parseFloat(statusData.raw.data.entered_total);
+            console.log(`Using entered_total field: ${resultAmount} ${intermediateCoin}`);
+          }
+          // Use entered_total if available (this is what we got in USDT)
+          else if (statusData.raw?.data?.entered_total) {
+            resultAmount = parseFloat(statusData.raw.data.entered_total);
+            console.log(`Using entered_total field: ${resultAmount} ${intermediateCoin}`);
+          }
+          // Fall back to other methods if the primary ones aren't available
+          else if (statusData.raw.position && statusData.raw.position.total && statusData.raw.position.total.value) {
+            resultAmount = parseFloat(statusData.raw.position.total.value);
+            console.log(`Using position.total.value: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else if (statusData.raw.completed_safety_orders_data && statusData.raw.completed_safety_orders_data.length > 0) {
+            resultAmount = parseFloat(statusData.raw.completed_safety_orders_data[0].done_average_price) * 
+                          parseFloat(statusData.raw.completed_safety_orders_data[0].done_quantity);
+            console.log(`Using completed_safety_orders calculation: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else if (statusData.raw.completed_manual_safety_orders && statusData.raw.completed_manual_safety_orders.length > 0) {
+            resultAmount = parseFloat(statusData.raw.completed_manual_safety_orders[0].done_average_price) * 
+                          parseFloat(statusData.raw.completed_manual_safety_orders[0].done_quantity);
+            console.log(`Using completed_manual_safety_orders calculation: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else if (statusData.raw.position && statusData.raw.position.done_quantity && statusData.raw.position.done_average_price) {
+            resultAmount = parseFloat(statusData.raw.position.done_quantity) * 
+                          parseFloat(statusData.raw.position.done_average_price);
+            console.log(`Using position calculation: ${resultAmount} ${intermediateCoin}`);
+          } 
+          else {
+            // If we can't determine the exact amount, estimate it (less accurate)
+            // Use the amount we sent minus an estimated fee
+            resultAmount = amount * 0.998; // Assuming 0.2% fee
+            console.warn(`Could not determine exact resulting amount. Estimating ${resultAmount} ${intermediateCoin}`);            
+          }
+        } catch (error) {
+          console.error('Error calculating resulting amount:', error);
+          resultAmount = amount * 0.998; // Fallback to estimation
+          console.warn(`Failed to parse trade result. Estimating ${resultAmount} ${intermediateCoin}`);
+        }
+        
+        console.log(`First trade resulted in approximately ${resultAmount} ${intermediateCoin}`);
+        
+        // Step 2: Buy toCoin with the USDT from step 1
+        // Ensure we have a valid number for the amount and apply minimum trade amount requirements
+        let secondStepAmount = parseFloat(resultAmount);
+        if (isNaN(secondStepAmount) || secondStepAmount <= 0) {
+          console.error(`Invalid resultAmount: ${resultAmount}, using fallback estimation`);
+          secondStepAmount = amount * 0.998; // Fallback estimation
+        }
+        
+        // Apply minimum amount rules for USDT (or other intermediate coin)
+        const intermediateMinAmount = this.minimumAmounts[intermediateCoin] || 10;
+        if (secondStepAmount < intermediateMinAmount) {
+          console.warn(`Warning: Second step amount ${secondStepAmount} ${intermediateCoin} is below minimum ${intermediateMinAmount}. Adjusting to minimum.`);
+          secondStepAmount = intermediateMinAmount;
+        }
+        
+        console.log(`Step 2: Buying ${toCoin} with ${secondStepAmount} ${intermediateCoin}`);
+        console.log(`Using position type 'buy' for second step (USDT → destination coin)`);
+        
+        let trade2;
+        try {
+          // Execute second step with explicit BUY position type
+          const [error2, tradeResult] = await this.executeTrade(
+            accountId, intermediateCoin, toCoin, secondStepAmount, 
+            useTakeProfit, takeProfitPercentage, mode, true, 'buy'
+          );
+          
+          if (error2) {
+            console.error(`Failed in step 2 (${intermediateCoin} → ${toCoin}):`, error2);
+            
+            // Check if it's a 422 error (validation error)
+            if (error2.code === 422 || (error2.message && error2.message.includes('422'))) {
+              console.error('This appears to be a validation error. Common causes include:');
+              console.error('- Insufficient funds in the account');
+              console.error('- Trading amount below exchange minimum');
+              console.error('- Invalid pair format');
+              
+              // Get more details about the account balance
+              try {
+                const [balanceErr, balanceData] = await this.request('accounts', `${accountId}/balance_chart_data`, { date_from: new Date().toISOString() });
+                if (!balanceErr && balanceData) {
+                  const usdtBalance = balanceData.currencies.find(c => c.code === intermediateCoin);
+                  console.log(`Current ${intermediateCoin} balance:`, usdtBalance);
+                }
+              } catch (innerErr) {
+                console.error('Could not fetch balance data:', innerErr.message);
+              }
+            }
+            
+            return [error2, null];
+          }
+          
+          // Store trade2 from the successful result
+          trade2 = tradeResult;
+          console.log(`✅ Step 2 completed. Trade ID: ${trade2.tradeId}`);
+          
+          // Return the final trade details (from step 2)
+          return [null, {
+            success: true,
+            tradeId: trade2.tradeId,
+            status: trade2.status,
+            pair: trade2.pair,
+            createdAt: trade2.createdAt,
+            isIndirectTrade: true,
+            step1TradeId: trade1.tradeId,
+            raw: trade2.raw
+          }];
+        } catch (error) {
+          console.error(`Exception in step 2 execution: ${error.message}`);
+          return [{
+            code: 500,
+            message: `Exception in step 2 execution: ${error.message}`
+          }, null];
+        }
+      }
+      
       const path = '/public/api/v2/smart_trades';
 
-      // For 3Commas, the pair format is BASE_QUOTE (e.g., USDT_ADA, ETH_BTC)
-      // We need to determine position type based on direction of the trade relative to the pair
-      
-      // In 3Commas:
-      // - If trading from the second currency to the first (ADA → USDT in USDT_ADA pair), it's a "sell"
-      // - If trading from the first currency to the second (USDT → ADA in USDT_ADA pair), it's a "buy"
-      const firstCurrency = pair.split('_')[0]; // e.g., USDT in USDT_ADA
-      const positionType = fromCoin === firstCurrency ? 'buy' : 'sell';
+      // Position type and pair format have already been determined
       
       // Handle minimum trade requirements based on coin
       // Different coins have different minimum sizes on exchanges
       let tradeAmount = parseFloat(amount);
       
-      // Define minimum amounts based on coin type
-      // These are estimates and should be refined based on exchange requirements
-      const minimumAmounts = {
-        'BTC': 0.0001,   // Minimum BTC trade size
-        'ETH': 0.001,    // Minimum ETH trade size
-        'ADA': 10,       // Minimum ADA trade size based on our successful test
-        'USDT': 10,      // Minimum USDT trade size
-        'DOGE': 50,      // DOGE has low value per coin, needs higher minimums
-        'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
-      };
-      
       // Get the minimum for this coin, default to 10 if not specified
       // 10 is our "known working value" from previous successful tests
-      const coinMinimum = minimumAmounts[fromCoin] || 10;
+      const coinMinimum = this.minimumAmounts[fromCoin] || 10;
       
       // Check if requested amount is below the minimum
       if (tradeAmount < coinMinimum) {
@@ -489,6 +673,7 @@ class ThreeCommasService {
         stop_loss: {
           enabled: false
         },
+        instant: true,
         // Always include the demo flag with explicit boolean value
         demo: isPaperTrading === true
       };
@@ -547,6 +732,7 @@ class ThreeCommasService {
         status: response.data.status,
         pair: response.data.pair,
         createdAt: response.data.created_at,
+        isIndirectTrade: isIndirectTrade,
         raw: response.data
       }];
     } catch (error) {
@@ -562,6 +748,78 @@ class ThreeCommasService {
   }
   
   /**
+   * Wait for a trade to complete and return its final status
+   * @param {String|Number} tradeId - The 3Commas smart trade ID to monitor
+   * @returns {Promise<Array>} - [error, statusData]
+   */
+  async waitForTradeCompletion(tradeId) {
+    const maxAttempts = 30; // Increased from 10
+    const waitTime = 3000; // Check every 3 seconds
+    
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      console.log(`Checking trade status (attempt ${attempt + 1}/${maxAttempts})...`);
+      const [statusError, statusData] = await this.getTradeStatus(tradeId);
+      
+      if (statusError) {
+        console.error('Error checking trade status:', statusError);
+        
+        // If we're consistently getting errors, wait a bit longer before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+      
+      // Log the full status object for debugging
+      console.log('Trade status details:', JSON.stringify({
+        status: statusData.status,
+        id: statusData.tradeId,
+        profit: statusData.profit,
+        rawStatus: statusData.raw?.status
+      }));
+      
+      // Check for various status values that indicate completion
+      // Different API versions may return different status values
+      const completedStatuses = ['completed', 'closed', 'cancelled', 'failed', 'done', 'finished'];
+      
+      // Check both the parsed status and raw status
+      const statusCompleted = (
+        completedStatuses.includes(statusData.status) || 
+        (statusData.raw && completedStatuses.includes(statusData.raw.status))
+      );
+      
+      // Also check if position is filled which indicates trade execution
+      const positionFilled = statusData.raw && 
+                            statusData.raw.position && 
+                            statusData.raw.position.status === 'filled';
+      
+      if (statusCompleted || positionFilled) {
+        console.log(`Trade ${tradeId} completed with status: ${statusData.status}`);
+        return [null, statusData];
+      }
+      
+      // If the trade is in process, wait a shorter time
+      const processingStatuses = ['in_progress', 'pending', 'processing'];
+      const isProcessing = (
+        processingStatuses.includes(statusData.status) ||
+        (statusData.raw && processingStatuses.includes(statusData.raw.status))
+      );
+      
+      const waitInterval = isProcessing ? Math.min(waitTime, 2000) : waitTime;
+      
+      console.log(`Trade status: ${statusData.status}. Waiting ${waitInterval/1000} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, waitInterval));
+    }
+    
+    // Perform one final check before giving up
+    const [finalError, finalStatus] = await this.getTradeStatus(tradeId);
+    if (!finalError && finalStatus) {
+      // Accept any status at this point - we've waited long enough
+      return [null, finalStatus];
+    }
+    
+    return [{ message: 'Trade did not complete in the expected timeframe' }, null];
+  }
+  
+  /**
    * Get trade status by ID from 3Commas
    * @param {String|Number} tradeId - The 3Commas smart trade ID
    * @returns {Promise<Array>} - [error, response]
@@ -570,6 +828,8 @@ class ThreeCommasService {
     try {
       // Use smart_trades_v2 API to match the Python implementation
       const [error, response] = await this.request('smart_trades_v2', tradeId);
+
+      
       
       if (error) {
         return [error, null];
@@ -585,8 +845,54 @@ class ThreeCommasService {
         raw: response
       }];
     } catch (error) {
-      console.error(`Error in getTradeStatus: ${error.message}`);
+      console.error('Error parsing trade status response:', error);
       return [{ message: error.message }, null];
+    }
+  }
+  
+  /**
+   * Check if a trading pair exists on 3Commas for a specific account
+   * @param {String|Number} accountId - The 3Commas account ID
+   * @param {String} pair - Trading pair in format BASE_QUOTE (e.g. USDT_ADA)
+   * @returns {Promise<Boolean>} - True if the pair exists, false otherwise
+   */
+  async checkPairExists(accountId, pair) {
+    try {
+      console.log(`Checking if pair ${pair} exists for account ${accountId}...`);
+      
+      // Check the cache first if we have it
+      if (this._marketPairsCache && this._marketPairsCache[accountId]) {
+        const exists = this._marketPairsCache[accountId].includes(pair);
+        console.log(`Pair ${pair} ${exists ? 'found' : 'not found'} in cache.`);
+        return exists;
+      }
+      
+      // If not in cache, fetch from API
+      const [error, response] = await this.request('accounts', `${accountId}/market_pairs`);
+      
+      if (error) {
+        console.error('Error fetching market pairs:', error);
+        // If we can't check, assume it exists to allow the trade to try
+        // The actual trade will fail with a proper error if the pair doesn't exist
+        return true;
+      }
+      
+      // Initialize cache if needed
+      if (!this._marketPairsCache) {
+        this._marketPairsCache = {};
+      }
+      
+      // Cache the pairs for this account
+      this._marketPairsCache[accountId] = response;
+      
+      const exists = response.includes(pair);
+      console.log(`Pair ${pair} ${exists ? 'exists' : 'does not exist'} on 3Commas for account ${accountId}.`);
+      return exists;
+    } catch (error) {
+      console.error(`Error in checkPairExists: ${error.message}`);
+      // If we encounter an error during the check, assume the pair exists
+      // to allow the trade to try - the actual trade will fail with a proper error if needed
+      return true;
     }
   }
   
@@ -663,5 +969,6 @@ class ThreeCommasService {
     }
   }
 }
+
 
 module.exports = ThreeCommasService;

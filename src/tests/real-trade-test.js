@@ -30,14 +30,14 @@ const simulate = args.includes('--simulate');
 // Configuration
 const config = {
   // Minimal trade amount (in base coin)
-  minimalTradeAmount: 0.0001, // Very small amount, adjust based on exchange minimums
+  minimalTradeAmount: 1, // Very small amount, adjust based on exchange minimums
   
   // Time to wait before checking trade status (ms)
   statusCheckDelay: 5000,
   
   // Currency pairs to use for testing (adjust based on your account)
   fromCoin: 'ADA',
-  toCoin: 'USDT',
+  toCoin: 'XRP',
   
   // Whether to use take profit for the test trade
   useTakeProfit: false,

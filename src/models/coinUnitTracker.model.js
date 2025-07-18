@@ -11,19 +11,23 @@ module.exports = (sequelize, Sequelize) => {
       references: {
         model: 'bots',
         key: 'id'
-      }
+      },
+      field: 'bot_id'
     },
     coin: {
       type: Sequelize.STRING,
-      allowNull: false
+      allowNull: false,
+      field: 'coin'
     },
     units: {
       type: Sequelize.FLOAT,
-      allowNull: false
+      allowNull: false,
+      field: 'units'
     },
     lastUpdated: {
       type: Sequelize.DATE,
-      defaultValue: Sequelize.NOW
+      defaultValue: Sequelize.NOW,
+      field: 'last_updated'
     }
   }, {
     tableName: 'coin_unit_tracker',
