@@ -38,7 +38,7 @@ class ThreeCommasService {
       'ETH': 0.001,    // Minimum ETH trade size
       'ADA': 10,       // Minimum ADA trade size based on our successful test
       'USDT': 10,      // Minimum USDT trade size
-      'DOGE': 50,      // DOGE has low value per coin, needs higher minimums
+      'DOGE': 10,      // DOGE has low value per coin, needs higher minimums
       'SHIB': 100000   // SHIB has very low value per coin, needs much higher minimums
     };
     
@@ -506,91 +506,8 @@ class ThreeCommasService {
         
         console.log(`✅ Step 1 completed. Trade ID: ${trade1.tradeId}`);
         
-        // Wait for the first trade to complete and get the resulting amount
-        const waitForTradeCompletion = async (tradeId) => {
-          const maxAttempts = 30; // Increased from 10 to handle longer delays if needed
-          const initialWaitTime = 1000; // Start with 1 second for the first few checks (instant trades)
-          
-          for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            console.log(`Checking trade status (attempt ${attempt + 1}/${maxAttempts})...`);
-            const [statusError, statusData] = await this.getTradeStatus(tradeId);
-            
-            if (statusError) {
-              console.error('Error checking trade status:', statusError);
-              continue;
-            }
-            
-            // Log the full status object for debugging
-            console.log('Trade status details:', JSON.stringify({
-              status: statusData.status,
-              id: statusData.tradeId,
-              finished: statusData.raw?.data?.finished
-            }));
-            
-            // Check all possible indicators of completion
-            const isCompleted = (
-              // Check status.type (from the response structure)
-              (statusData.status?.type && ['finished', 'completed', 'closed', 'cancelled'].includes(statusData.status.type)) ||
-              
-              // Check status as string (legacy format)
-              ['completed', 'closed', 'cancelled', 'finished'].includes(statusData.status) ||
-              
-              // Check data.finished flag
-              (statusData.raw?.data?.finished === true) ||
-              
-              // Check base_order_finished flag
-              (statusData.raw?.data?.base_order_finished === true)
-            );
-            
-            if (isCompleted) {
-              console.log(`Trade ${tradeId} completed with status: ${JSON.stringify(statusData.status)}`);
-              return [null, statusData];
-            }
-            
-            // Adaptive wait times - start with shorter waits and increase gradually
-            // For instant trades, we want to check quickly at first
-            const processingStatuses = ['in_progress', 'pending', 'processing'];
-            const isProcessing = (
-              (typeof statusData.status === 'string' && processingStatuses.includes(statusData.status)) ||
-              (statusData.status?.type && processingStatuses.includes(statusData.status.type)) ||
-              (statusData.raw?.status && processingStatuses.includes(statusData.raw.status))
-            );
-            
-            // Calculate wait time based on attempt number and status
-            // First 5 attempts: use initialWaitTime (fast checking for instant trades)
-            // Later attempts: gradually increase wait time up to 5000ms
-            let waitTime;
-            if (attempt < 5) {
-              waitTime = initialWaitTime; // Start with fast checks (1000ms)
-            } else {
-              // Progressive backoff, but not too slow
-              const maxWaitTime = 5000; // Cap at 5 seconds max
-              waitTime = Math.min(initialWaitTime * (1 + (attempt - 5) / 5), maxWaitTime);
-            }
-            
-            // If the trade is actively processing, check more frequently
-            if (isProcessing) {
-              waitTime = Math.min(waitTime, 2000); // Cap at 2 seconds for active processing
-            }
-            
-            console.log(`Trade status: ${JSON.stringify(statusData.status)}. Waiting ${waitTime/1000} seconds...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-          }
-          
-          // Perform one final check before giving up
-          console.log('Performing final status check before giving up...');
-          const [finalError, finalStatus] = await this.getTradeStatus(tradeId);
-          if (!finalError && finalStatus) {
-            // Accept any status at this point - we've waited long enough
-            console.log(`Final check: Trade ${tradeId} status: ${JSON.stringify(finalStatus.status)}`);
-            return [null, finalStatus];
-          }
-          
-          return [{ message: 'Trade did not complete in the expected timeframe' }, null];
-        };
-        
         console.log(`Waiting for first trade (ID: ${trade1.tradeId}) to complete...`);
-        const [statusError, statusData] = await waitForTradeCompletion(trade1.tradeId);
+        const [statusError, statusData] = await this.waitForTradeCompletion(trade1.tradeId);
         
         if (statusError) {
           console.error('Failed to get status of first trade:', statusError);
@@ -603,9 +520,9 @@ class ThreeCommasService {
         try {
           // First try to use entered_amount from data (most reliable field)
           // This is the actual amount that was acquired in the trade
-          if (statusData.raw?.data?.entered_amount) {
-            resultAmount = parseFloat(statusData.raw.data.entered_amount);
-            console.log(`Using entered_amount field: ${resultAmount} ${intermediateCoin}`);
+          if (statusData.raw?.data?.entered_total) {
+            resultAmount = parseFloat(statusData.raw.data.entered_total);
+            console.log(`Using entered_total field: ${resultAmount} ${intermediateCoin}`);
           }
           // Use entered_total if available (this is what we got in USDT)
           else if (statusData.raw?.data?.entered_total) {
@@ -831,6 +748,78 @@ class ThreeCommasService {
   }
   
   /**
+   * Wait for a trade to complete and return its final status
+   * @param {String|Number} tradeId - The 3Commas smart trade ID to monitor
+   * @returns {Promise<Array>} - [error, statusData]
+   */
+  async waitForTradeCompletion(tradeId) {
+    const maxAttempts = 30; // Increased from 10
+    const waitTime = 3000; // Check every 3 seconds
+    
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      console.log(`Checking trade status (attempt ${attempt + 1}/${maxAttempts})...`);
+      const [statusError, statusData] = await this.getTradeStatus(tradeId);
+      
+      if (statusError) {
+        console.error('Error checking trade status:', statusError);
+        
+        // If we're consistently getting errors, wait a bit longer before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+      
+      // Log the full status object for debugging
+      console.log('Trade status details:', JSON.stringify({
+        status: statusData.status,
+        id: statusData.tradeId,
+        profit: statusData.profit,
+        rawStatus: statusData.raw?.status
+      }));
+      
+      // Check for various status values that indicate completion
+      // Different API versions may return different status values
+      const completedStatuses = ['completed', 'closed', 'cancelled', 'failed', 'done', 'finished'];
+      
+      // Check both the parsed status and raw status
+      const statusCompleted = (
+        completedStatuses.includes(statusData.status) || 
+        (statusData.raw && completedStatuses.includes(statusData.raw.status))
+      );
+      
+      // Also check if position is filled which indicates trade execution
+      const positionFilled = statusData.raw && 
+                            statusData.raw.position && 
+                            statusData.raw.position.status === 'filled';
+      
+      if (statusCompleted || positionFilled) {
+        console.log(`Trade ${tradeId} completed with status: ${statusData.status}`);
+        return [null, statusData];
+      }
+      
+      // If the trade is in process, wait a shorter time
+      const processingStatuses = ['in_progress', 'pending', 'processing'];
+      const isProcessing = (
+        processingStatuses.includes(statusData.status) ||
+        (statusData.raw && processingStatuses.includes(statusData.raw.status))
+      );
+      
+      const waitInterval = isProcessing ? Math.min(waitTime, 2000) : waitTime;
+      
+      console.log(`Trade status: ${statusData.status}. Waiting ${waitInterval/1000} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, waitInterval));
+    }
+    
+    // Perform one final check before giving up
+    const [finalError, finalStatus] = await this.getTradeStatus(tradeId);
+    if (!finalError && finalStatus) {
+      // Accept any status at this point - we've waited long enough
+      return [null, finalStatus];
+    }
+    
+    return [{ message: 'Trade did not complete in the expected timeframe' }, null];
+  }
+  
+  /**
    * Get trade status by ID from 3Commas
    * @param {String|Number} tradeId - The 3Commas smart trade ID
    * @returns {Promise<Array>} - [error, response]
@@ -840,7 +829,7 @@ class ThreeCommasService {
       // Use smart_trades_v2 API to match the Python implementation
       const [error, response] = await this.request('smart_trades_v2', tradeId);
 
-      console.log({error,response})
+      
       
       if (error) {
         return [error, null];

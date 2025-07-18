@@ -326,8 +326,37 @@ class EnhancedSwapService {
         bot.id
       );
       
-      // Use bot's initialAmount setting if available, or a configurable default
-      const amount = bot.manualBudgetAmount || systemConfig.defaultInitialAmount || 0.01;
+      // First check if the coin already exists in the account
+      logMessage('INFO', `Getting available coins to check if ${coin} already exists`, bot.name);
+      const [balancesError, availableCoins] = await threeCommasClient.getAvailableCoins(bot.accountId);
+      
+      if (balancesError) {
+        logMessage('ERROR', `Failed to get available coins: ${balancesError.message || 'Unknown error'}`, bot.name);
+        await LogEntry.log(db, 'ERROR', `Failed to get available coins: ${balancesError.message || 'Unknown error'}`, bot.id);
+        // Continue with default amount since this is initialization
+      }
+      
+      // Default amount to use
+      let amount = bot.manualBudgetAmount || systemConfig.defaultInitialAmount || 0.01;
+      
+      // If we successfully got balances and the coin exists, use the existing amount
+      if (!balancesError && availableCoins) {
+        const existingCoin = availableCoins.find(c => c.coin === coin);
+        if (existingCoin && existingCoin.amount > 0) {
+          // If manual budget is specified and less than the available amount in USD, use it as a cap
+          if (bot.manualBudgetAmount && existingCoin.amountInUsd > bot.manualBudgetAmount) {
+            // Convert USD budget to coin units
+            amount = bot.manualBudgetAmount / (existingCoin.amountInUsd / existingCoin.amount);
+            logMessage('INFO', `Using manual budget cap for existing ${coin}: ${amount.toFixed(8)} units (${bot.manualBudgetAmount} USD)`, bot.name);
+          } else {
+            // Otherwise use the entire available amount
+            amount = existingCoin.amount;
+            logMessage('INFO', `Using existing ${coin} balance: ${amount} units (${existingCoin.amountInUsd} USD)`, bot.name);
+          }
+        } else {
+          logMessage('INFO', `${coin} not found in account or zero balance, using default amount: ${amount}`, bot.name);
+        }
+      }
       
       logMessage('INFO', `Initializing ${coin} with current price ${price} ${referenceCoin} and amount ${amount}`, bot.name);
       await LogEntry.log(db, 'INFO', `Initializing ${coin} with current price ${price} ${referenceCoin} and amount ${amount}`, bot.id);
@@ -504,12 +533,54 @@ class EnhancedSwapService {
         const useTakeProfit = bot.useTakeProfit || false;
         const takeProfitPercentage = bot.takeProfitPercentage || 2; // Default 2%
         
-        // Call 3Commas API to execute the trade
+        // Get real-time balances to avoid insufficient funds errors
+        logMessage('INFO', `Getting real-time balances for ${fromCoin}`, bot.name);
+        const [balancesError, availableCoins] = await threeCommasClient.getAvailableCoins(bot.accountId);
+
+        if (balancesError) {
+          const errorMsg = `Failed to get available coins: ${balancesError.message || 'Unknown error'}`;
+          logMessage('ERROR', errorMsg, bot.name);
+          await LogEntry.log(db, 'ERROR', errorMsg, bot.id);
+          return { success: false, error: balancesError };
+        }
+
+        // Find the actual available amount for the fromCoin
+        const fromCoinData = availableCoins.find(c => c.coin === fromCoin);
+        if (!fromCoinData || fromCoinData.amount <= 0) {
+          const errorMsg = `Insufficient balance of ${fromCoin} for trade`;
+          logMessage('ERROR', errorMsg, bot.name);
+          await LogEntry.log(db, 'ERROR', errorMsg, bot.id);
+          return { success: false, error: { message: errorMsg } };
+        }
+
+        // Calculate how much to use based on real-time balance
+        let tradeAmount = fromCoinData.amount;
+        logMessage('INFO', `Available balance: ${tradeAmount} ${fromCoin} (${fromCoinData.amountInUsd} USD)`, bot.name);
+        
+        // If stored amount is less than available, use stored amount as a cap
+        if (fromAsset.amount < tradeAmount) {
+          tradeAmount = fromAsset.amount;
+          logMessage('INFO', `Using stored amount cap: ${tradeAmount} ${fromCoin}`, bot.name);
+        }
+
+        // Apply manual budget limit if configured
+        if (bot.manualBudgetAmount && fromCoinData.amountInUsd > bot.manualBudgetAmount) {
+          // Convert the budget amount in USD back to coin units
+          const budgetLimitedAmount = bot.manualBudgetAmount / (fromCoinData.amountInUsd / fromCoinData.amount);
+          if (budgetLimitedAmount < tradeAmount) {
+            tradeAmount = budgetLimitedAmount;
+            logMessage('INFO', `Limiting trade to manual budget: ${tradeAmount.toFixed(8)} ${fromCoin} (${bot.manualBudgetAmount} USD)`, bot.name);
+            await LogEntry.log(db, 'INFO', `Limited trade to manual budget: ${tradeAmount.toFixed(8)} ${fromCoin}`, bot.id);
+          }
+        }
+
+        // Call 3Commas API to execute the trade with real-time calculated amount
+        logMessage('INFO', `Executing trade with amount: ${tradeAmount} ${fromCoin}`, bot.name);
         const [error, response] = await threeCommasClient.executeTrade(
           bot.accountId,
           fromCoin,
           toCoin,
-          fromAsset.amount,
+          tradeAmount, // Use real-time calculated amount instead of stored fromAsset.amount
           useTakeProfit,
           takeProfitPercentage
         );
@@ -521,13 +592,58 @@ class EnhancedSwapService {
           throw new Error(errorMsg);
         }
         
+        // Store the trade result and ID
         tradeResult = response;
         tradeId = response.tradeId;
+        
+        // Log successful trade initiation
+        logMessage('SUCCESS', `Successfully initiated trade ${tradeId} from ${fromCoin} to ${toCoin}`, bot.name);
+        await LogEntry.log(db, 'SUCCESS', `Trade ${tradeId} initiated with amount ${tradeAmount} ${fromCoin}`, bot.id);
+        
+        // Wait for trade to complete if we have a tradeId
+        if (tradeId) {
+          logMessage('INFO', `Waiting for trade ${tradeId} to complete...`, bot.name);
+          const [waitError, completedTradeStatus] = await threeCommasClient.waitForTradeCompletion(tradeId);
+          
+          if (waitError) {
+            logMessage('WARNING', `Trade completion monitoring issue: ${waitError.message}`, bot.name);
+            await LogEntry.log(db, 'WARNING', `Trade completion monitoring issue: ${waitError.message}`, bot.id);
+            // Continue since the trade might still be processing
+          } else {
+            logMessage('INFO', `Trade ${tradeId} completed with status: ${completedTradeStatus.status}`, bot.name);
+            await LogEntry.log(db, 'INFO', `Trade ${tradeId} completed with status: ${completedTradeStatus.status}`, bot.id);
+          }
+        }
       }
       
-      // Calculate or use the amount received
+      // Calculate or use the amount received from completed trade data if available
       const netValueUSDT = fromValueUSDT - commissionAmount;
-      const toAmount = tradeResult.amount || netValueUSDT / toPrice;
+      
+      // Try to extract the actual executed amount from trade result
+      // This is more accurate than estimation since it accounts for slippage and fees
+      let toAmount = tradeResult.amount; // First try the direct amount field
+      
+      // If no direct amount, check if we have data from trade completion monitoring
+      if (!toAmount && tradeResult.completedTradeStatus) {
+        // Try to extract from various possible response formats
+        const rawData = tradeResult.completedTradeStatus.raw;
+        
+        if (rawData) {
+          // Check different possible fields where the amount might be stored
+          toAmount = rawData.entered_amount || // Standard field
+                    rawData.to_amount || // Alternative field
+                    (rawData.position && rawData.position.units) || // Position units
+                    (rawData.position && rawData.position.quantity); // Position quantity
+        }
+      }
+      
+      // If we still don't have a valid amount, fallback to calculation based on price
+      if (!toAmount || toAmount <= 0) {
+        toAmount = netValueUSDT / toPrice;
+        logMessage('INFO', `Using calculated amount ${toAmount.toFixed(8)} ${toCoin} (no executed amount data available)`, bot.name);
+      } else {
+        logMessage('INFO', `Using executed amount ${toAmount.toFixed(8)} ${toCoin} from trade data`, bot.name);
+      }
       
       // Update total commissions paid
       const totalCommissionsPaid = (bot.totalCommissionsPaid || 0) + commissionAmount;
