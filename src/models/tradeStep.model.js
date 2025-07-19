@@ -1,29 +1,32 @@
+/**
+ * Trade Step model for tracking individual steps of multi-step trades
+ */
+
 module.exports = (sequelize, Sequelize) => {
-  const Trade = sequelize.define("trade", {
+  const TradeStep = sequelize.define("tradeStep", {
     id: {
       type: Sequelize.INTEGER,
       primaryKey: true,
       autoIncrement: true
     },
-    botId: {
+    parentTradeId: {
       type: Sequelize.INTEGER,
       allowNull: false,
-      field: 'bot_id',
+      field: 'parent_trade_id',
       references: {
-        model: 'bots',
+        model: 'trades',
         key: 'id'
       }
     },
+    stepNumber: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      field: 'step_number'
+    },
     tradeId: {
       type: Sequelize.STRING,
-      allowNull: true,  // Now nullable for parent multi-step trades
+      allowNull: false,
       field: 'trade_id'
-      // unique constraint removed to support multi-step trades
-    },
-    compositeTradeId: {
-      type: Sequelize.STRING,
-      allowNull: true,
-      field: 'composite_trade_id'
     },
     fromCoin: {
       type: Sequelize.STRING,
@@ -34,16 +37,6 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.STRING,
       allowNull: false,
       field: 'to_coin'
-    },
-    intermediaryCoin: {
-      type: Sequelize.STRING,
-      allowNull: true,
-      field: 'intermediary_coin'
-    },
-    isMultiStep: {
-      type: Sequelize.BOOLEAN,
-      defaultValue: false,
-      field: 'is_multi_step'
     },
     fromAmount: {
       type: Sequelize.FLOAT,
@@ -65,20 +58,10 @@ module.exports = (sequelize, Sequelize) => {
       allowNull: false,
       field: 'to_price'
     },
-    commissionRate: {
-      type: Sequelize.FLOAT,
-      allowNull: true,
-      field: 'commission_rate'
-    },
     commissionAmount: {
       type: Sequelize.FLOAT,
       allowNull: true,
       field: 'commission_amount'
-    },
-    priceChange: {
-      type: Sequelize.FLOAT,
-      allowNull: true,
-      field: 'price_change'
     },
     status: {
       type: Sequelize.STRING, // pending, completed, failed
@@ -93,36 +76,30 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.DATE,
       allowNull: true,
       field: 'completed_at'
+    },
+    rawTradeData: {
+      type: Sequelize.JSON,
+      allowNull: true,
+      field: 'raw_trade_data'
     }
   }, {
-    tableName: 'trades',
+    tableName: 'trade_steps',
     timestamps: false,
     indexes: [
-      {
-        fields: ['bot_id']
-      },
-      {
-        fields: ['trade_id']
-      },
-      {
-        fields: ['composite_trade_id']
-      },
-      {
-        fields: ['status']
-      },
-      {
-        fields: ['executed_at']
-      }
+      { fields: ['parent_trade_id'] },
+      { fields: ['trade_id'] },
+      { fields: ['status'] },
+      { fields: ['executed_at'] }
     ]
   });
 
-  Trade.associate = function(models) {
-    // Define relationship with TradeStep model
-    Trade.hasMany(models.tradeStep, {
+  TradeStep.associate = function(models) {
+    // Define relationship with Trade model
+    TradeStep.belongsTo(models.trade, {
       foreignKey: 'parent_trade_id',
-      as: 'steps'
+      as: 'parentTrade'
     });
   };
 
-  return Trade;
+  return TradeStep;
 };

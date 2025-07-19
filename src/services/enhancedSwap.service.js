@@ -4,17 +4,23 @@
  */
 const db = require('../models');
 const ThreeCommasService = require('./threeCommas.service');
-const priceService = require('./price.service');
+const LogEntry = require('./logEntry.service');
 const assetManager = require('./assetManager.service');
 const snapshotManager = require('./snapshotManager.service');
-const deviationCalculator = require('./deviationCalculator.service');
+const priceService = require('./price.service');
 const swapDecision = require('./swapDecision.service');
+const tradeRecordingService = require('./tradeRecording.service');
+const multiStepTradeService = require('./multiStepTrade.service');
 const chalk = require('chalk');
-const LogEntry = db.logEntry;
+const { logMessage } = require('../utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const { formatDateISO } = require('../utils/dateUtils');
+
 const Bot = db.bot;
 const BotAsset = db.botAsset;
-const Trade = db.trade;
+const LogEntry = db.logEntry;
 const CoinSnapshot = db.coinSnapshot;
+const Trade = db.trade;
 
 /**
  * Format and print a log message with timestamp, level, and bot info
@@ -574,16 +580,53 @@ class EnhancedSwapService {
           }
         }
 
-        // Call 3Commas API to execute the trade with real-time calculated amount
-        logMessage('INFO', `Executing trade with amount: ${tradeAmount} ${fromCoin}`, bot.name);
-        const [error, response] = await threeCommasClient.executeTrade(
-          bot.accountId,
-          fromCoin,
-          toCoin,
-          tradeAmount, // Use real-time calculated amount instead of stored fromAsset.amount
-          useTakeProfit,
-          takeProfitPercentage
-        );
+        // Check if this requires a direct trade or a multi-step trade
+        const canTradeDirectly = threeCommasClient.isDirectTrade(fromCoin, toCoin, bot.accountId);
+        let error, response;
+        
+        if (canTradeDirectly) {
+          // Execute direct trade
+          logMessage('INFO', `Executing direct trade with amount: ${tradeAmount} ${fromCoin}`, bot.name);
+          [error, response] = await threeCommasClient.executeTrade(
+            bot.accountId,
+            fromCoin,
+            toCoin,
+            tradeAmount, // Use real-time calculated amount instead of stored fromAsset.amount
+            useTakeProfit,
+            takeProfitPercentage
+          );
+        } else {
+          // Execute multi-step trade via stablecoin
+          const stablecoin = bot.preferredStablecoin || 'USDT';
+          logMessage('INFO', `Direct trading pair not available. Using two-step trade via ${stablecoin}`, bot.name);
+          await LogEntry.log(db, 'TRADE', `Using two-step trade via ${stablecoin} for ${fromCoin} → ${toCoin}`, bot.id);
+          
+          // Use the multi-step trade service
+          const multiStepResult = await multiStepTradeService.executeMultiStepTrade(
+            bot,
+            threeCommasClient,
+            fromCoin,
+            toCoin,
+            stablecoin,
+            tradeAmount,
+            useTakeProfit,
+            takeProfitPercentage
+          );
+          
+          // Format the response to match the expected structure
+          if (multiStepResult.success) {
+            error = null;
+            response = {
+              ...multiStepResult,
+              success: true,
+              tradeId: multiStepResult.tradeId,
+              firstStepTradeId: multiStepResult.firstStepTradeId
+            };
+          } else {
+            error = multiStepResult.error || { message: 'Multi-step trade failed' };
+            response = null;
+          }
+        }
         
         if (error || !response) {
           const errorMsg = error?.message || 'Unknown error executing trade with 3Commas API';
@@ -675,22 +718,93 @@ class EnhancedSwapService {
       await bot.update({ currentCoin: toCoin });
       
       // Create trade record for history with commission details
-      await Trade.create({
-        botId: bot.id,
-        userId: bot.userId,
-        fromCoin,
-        toCoin,
-        fromAmount: fromAsset.amount,
-        toAmount,
-        fromPrice,
-        toPrice,
-        commissionRate,
-        commissionAmount,
-        priceChange,
-        status: tradeResult.status || 'completed',
-        executed_at: new Date(),
-        tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}`
-      });
+      // For direct trades, use the simple trade recording
+      if (threeCommasClient.isDirectTrade(fromCoin, toCoin)) {
+        await tradeRecordingService.recordSingleStepTrade({
+          botId: bot.id,
+          userId: bot.userId,
+          fromCoin,
+          toCoin,
+          fromAmount: fromAsset.amount,
+          toAmount,
+          fromPrice,
+          toPrice,
+          commissionRate,
+          commissionAmount,
+          priceChange,
+          status: tradeResult.status || 'completed',
+          tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}`
+        });
+      } 
+      // For multi-step trades via stablecoin, use the multi-step recording
+      else {
+        // Get details about the intermediate step (first step) if available
+        const intermediaryCoin = stablecoin; // The stablecoin is the intermediary
+        const step1TradeId = tradeResult.firstStepTradeId || `SIMULATED-STEP1-${Date.now()}`;
+        const step2TradeId = tradeResult.tradeId || `SIMULATED-STEP2-${Date.now()}`;
+        
+        // Get step details from the tradeResult if available
+        const step1Amount = tradeResult.firstStepAmount || fromAsset.amount;
+        const step2Amount = toAmount;
+        
+        // Calculate commissions - if we have detailed information split it, otherwise estimate
+        const step1CommissionAmount = tradeResult.firstStepCommission || (commissionAmount / 2);
+        const step2CommissionAmount = tradeResult.secondStepCommission || (commissionAmount / 2);
+        
+        // Get intermediary coin price (should be close to 1.0 if USDT/USDC)
+        const intermediaryPrice = tradeResult.intermediaryPrice || 1.0;
+        
+        // Record the multi-step trade
+        await tradeRecordingService.recordMultiStepTrade(
+          {
+            botId: bot.id,
+            userId: bot.userId,
+            fromCoin,
+            toCoin,
+            intermediaryCoin,
+            fromAmount: fromAsset.amount,
+            toAmount,
+            fromPrice,
+            toPrice,
+            commissionRate,
+            totalCommissionAmount: commissionAmount,
+            priceChange,
+            status: tradeResult.status || 'completed'
+          },
+          [
+            // Step 1: from original coin to stablecoin
+            {
+              tradeId: step1TradeId,
+              fromCoin,
+              toCoin: intermediaryCoin,
+              fromAmount: step1Amount,
+              toAmount: step1Amount * fromPrice,
+              fromPrice,
+              toPrice: intermediaryPrice,
+              commissionAmount: step1CommissionAmount,
+              status: 'completed',
+              executedAt: new Date(),
+              completedAt: new Date(),
+              rawTradeData: tradeResult.firstStepData || null
+            },
+            // Step 2: from stablecoin to target coin
+            {
+              tradeId: step2TradeId,
+              fromCoin: intermediaryCoin,
+              toCoin,
+              fromAmount: step1Amount * fromPrice - step1CommissionAmount,
+              toAmount: step2Amount,
+              fromPrice: intermediaryPrice,
+              toPrice,
+              commissionAmount: step2CommissionAmount,
+              status: 'completed',
+              executedAt: new Date(),
+              completedAt: new Date(),
+              rawTradeData: tradeResult.secondStepData || null
+            }
+          ]
+        );
+      }
       
       logMessage('INFO', `Trade completed: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
       await LogEntry.log(db, 'TRADE', `Trade completed: ${fromCoin} → ${toCoin}`, bot.id);

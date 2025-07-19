@@ -467,9 +467,28 @@ const migrations = [
           }
         });
         
-        // Create indexes for faster lookups
-        await queryInterface.addIndex('asset_locks', ['bot_id', 'coin']);
-        await queryInterface.addIndex('asset_locks', ['status', 'expires_at']);
+        // Create indexes for faster lookups if they don't exist
+        try {
+          await queryInterface.addIndex('asset_locks', ['bot_id', 'coin'], { name: 'asset_locks_bot_id_coin' });
+          console.log('Created bot_id/coin index for asset_locks');
+        } catch (indexError) {
+          if (indexError.parent && indexError.parent.code === '42P07') {
+            console.log('Index asset_locks_bot_id_coin already exists, skipping...');
+          } else {
+            throw indexError;
+          }
+        }
+        
+        try {
+          await queryInterface.addIndex('asset_locks', ['status', 'expires_at'], { name: 'asset_locks_status_expires_at' });
+          console.log('Created status/expires_at index for asset_locks');
+        } catch (indexError) {
+          if (indexError.parent && indexError.parent.code === '42P07') {
+            console.log('Index asset_locks_status_expires_at already exists, skipping...');
+          } else {
+            throw indexError;
+          }
+        }
         
         console.log('asset_locks table created successfully');
       } catch (error) {
@@ -487,6 +506,12 @@ const migrations = [
         throw error;
       }
     }
+  },
+  {
+    id: '009_create_trade_steps_table',
+    description: 'Create trade_steps table and update trades table for multi-step trade support',
+    up: require('./migrations/009_create_trade_steps_table').up,
+    down: require('./migrations/009_create_trade_steps_table').down
   }
 ];
 

@@ -897,6 +897,52 @@ class ThreeCommasService {
   }
   
   /**
+   * Determines if a direct trade is possible between two coins
+   * @param {String} fromCoin - The coin to trade from (e.g., BTC)
+   * @param {String} toCoin - The coin to trade to (e.g., ETH)
+   * @param {String|Number} accountId - Optional account ID to check against available pairs
+   * @returns {Boolean} - True if direct trade is possible, false if intermediary coin is needed
+   */
+  isDirectTrade(fromCoin, toCoin, accountId = null) {
+    // Common stablecoins that are often used as intermediaries
+    const stablecoins = ['USDT', 'USDC', 'BUSD', 'DAI', 'TUSD'];
+    
+    // If either coin is a stablecoin, direct trade is usually possible
+    if (stablecoins.includes(fromCoin) || stablecoins.includes(toCoin)) {
+      return true;
+    }
+
+    // Check our cache if we've previously confirmed this pair exists
+    if (accountId && this._marketPairsCache && this._marketPairsCache[accountId]) {
+      // Try both pair orders
+      const standardPair = `${fromCoin}_${toCoin}`;
+      const reversedPair = `${toCoin}_${fromCoin}`;
+      
+      if (this._marketPairsCache[accountId].includes(standardPair) ||
+          this._marketPairsCache[accountId].includes(reversedPair)) {
+        return true;
+      }
+    }
+    
+    // For major coins, direct trading is often available
+    const majorCoins = ['BTC', 'ETH'];
+    if ((majorCoins.includes(fromCoin) && !stablecoins.includes(toCoin)) || 
+        (majorCoins.includes(toCoin) && !stablecoins.includes(fromCoin))) {
+      return true;
+    }
+    
+    // For altcoin to altcoin trades, usually need to go through a stablecoin
+    if (!majorCoins.includes(fromCoin) && !majorCoins.includes(toCoin) &&
+        !stablecoins.includes(fromCoin) && !stablecoins.includes(toCoin)) {
+      return false;
+    }
+    
+    // Default to assuming a direct trade is possible
+    // The actual trade execution will fail if this is wrong
+    return true;
+  }
+
+  /**
    * Get actual commission rates from the exchange via 3Commas
    * @param {String|Number} accountId - The 3Commas account ID
    * @returns {Promise<Array>} - [error, {makerRate, takerRate}]

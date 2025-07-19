@@ -82,6 +82,7 @@ db.apiConfig = require('./apiConfig.model.js')(sequelize, Sequelize);
 db.bot = require('./bot.model.js')(sequelize, Sequelize);
 db.priceHistory = require('./priceHistory.model.js')(sequelize, Sequelize);
 db.trade = require('./trade.model.js')(sequelize, Sequelize);
+db.tradeStep = require('./tradeStep.model.js')(sequelize, Sequelize);
 db.logEntry = require('./logEntry.model.js')(sequelize, Sequelize);
 db.systemConfig = require('./systemConfig.model.js')(sequelize, Sequelize);
 db.coinUnitTracker = require('./coinUnitTracker.model.js')(sequelize, Sequelize);
@@ -105,6 +106,9 @@ db.priceHistory.belongsTo(db.bot, { foreignKey: 'botId' });
 
 db.bot.hasMany(db.trade, { foreignKey: 'botId' });
 db.trade.belongsTo(db.bot, { foreignKey: 'botId' });
+
+// TradeStep relationships are defined in their model files
+// The associations are set up in trade.model.js and tradeStep.model.js
 
 db.bot.hasMany(db.logEntry, { foreignKey: 'botId' });
 db.logEntry.belongsTo(db.bot, { foreignKey: 'botId' });
@@ -146,6 +150,13 @@ Object.keys(db).forEach(modelName => {
     model.options.underscored = true; // Use snake_case
     model.options.createdAt = 'created_at';
     model.options.updatedAt = 'updated_at';
+  }
+});
+
+// Initialize associations for models that have an associate method
+Object.keys(db).forEach((modelName) => {
+  if (db[modelName].associate) {
+    db[modelName].associate(db);
   }
 });
 
