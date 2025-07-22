@@ -10,7 +10,7 @@ const ThreeCommasService = require('../services/threeCommas.service');
 const priceService = require('../services/price.service');
 
 // Helper functions
-const botToResponse = (bot) => {
+const botToResponse = (bot, currentAsset = null) => {
   const coinsArray = bot.getCoinsArray();
   return {
     id: bot.id,
@@ -32,18 +32,35 @@ const botToResponse = (bot) => {
     minAcceptableValue: bot.minAcceptableValue,
     allocationPercentage: bot.allocationPercentage,
     manualBudgetAmount: bot.manualBudgetAmount,
-    preferredStablecoin: bot.preferredStablecoin || 'USDT'
+    preferredStablecoin: bot.preferredStablecoin || 'USDT',
+    // Add current asset data if available
+    currentCoinAmount: currentAsset ? currentAsset.amount : null,
+    currentCoinValue: currentAsset ? currentAsset.usdtEquivalent : null,
+    currentCoinEntryPrice: currentAsset ? currentAsset.entryPrice : null,
+    botAssets: bot.botAssets
   };
 };
 
 // Get all bots for user
 exports.getAllBots = async (req, res) => {
   try {
+    // Fetch all bots for the user
     const bots = await Bot.findAll({
-      where: { userId: req.userId }
+      where: { userId: req.userId },
+      include: [
+        {
+          model: BotAsset,
+          required: false,
+          
+          attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
+        }
+      ]
     });
-    
+    // Simpler approach - just return basic bot data without assets for now
+    // This helps us avoid any potential schema mismatch issues
     return res.json(bots.map(bot => botToResponse(bot)));
+    
+    
   } catch (error) {
     console.error('Error getting bots:', error);
     return res.status(500).json({
@@ -62,7 +79,14 @@ exports.getBotById = async (req, res) => {
       where: {
         id: botId,
         userId: req.userId
-      }
+      },
+      include: [
+        {
+          model: BotAsset,
+          required: false,
+          attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
+        }
+      ]
     });
     
     if (!bot) {
