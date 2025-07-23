@@ -108,7 +108,7 @@ exports.getBotById = async (req, res) => {
 // Create new bot
 exports.createBot = async (req, res) => {
   try {
-    console.log(req.body)
+ 
     const { 
       name, 
       enabled, 
@@ -443,7 +443,7 @@ exports.getBotLogs = async (req, res) => {
 
 // Get trade decision logs for a bot - filtered on the server side for security
 exports.getTradeDecisionLogs = async (req, res) => {
-  console.log('in trade decision logs')
+  
   try {
     const botId = req.params.botId;
     const limit = parseInt(req.query.limit) || 100;
@@ -462,7 +462,7 @@ exports.getTradeDecisionLogs = async (req, res) => {
       limit: limit * 3 // Get more logs than we need to ensure we have enough for grouping
     });
     
-    console.log(logs);
+  
     
     // With the TRADE level filter, all logs should be trade decisions
     // For backward compatibility, we'll keep the message filter for older logs

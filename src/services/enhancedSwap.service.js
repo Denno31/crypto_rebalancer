@@ -336,6 +336,12 @@ class EnhancedSwapService {
           initializedAsset.amount,
           initializedAsset.entryPrice
         );
+
+        // we need to initialize the global peak value in usdt here. if we have a manual budget, use it if not, lets use the 
+        const currentBot = await Bot.findByPk(bot.id);
+        const globalPeakValue = currentBot.manualBudgetAmount || (initializedAsset.amount * initializedAsset.entryPrice);
+        currentBot.globalPeakValue = globalPeakValue;
+        await currentBot.save();
         
         await LogEntry.log(
           db, 
@@ -766,6 +772,23 @@ class EnhancedSwapService {
       
       // Update current coin in bot record
       await bot.update({ currentCoin: toCoin });
+      
+      // Calculate ETH equivalent value of the new position and update global peak if necessary
+      try {
+        const botService = require('./bot.service');
+        const valueInETH = await botService.convertToETH(bot, netValueUSDT);
+        
+        // Update global peak value in ETH if this is a new peak
+        if (!bot.globalPeakValueInETH || valueInETH > bot.globalPeakValueInETH) {
+          await bot.update({ globalPeakValueInETH: valueInETH });
+          logMessage('INFO', `Updated global peak ETH value to ${valueInETH.toFixed(8)}`, bot.name);
+          await LogEntry.log(db, 'INFO', `Updated global peak ETH value to ${valueInETH.toFixed(8)}`, bot.id);
+        }
+      } catch (ethError) {
+        // Non-critical error, just log it
+        logMessage('WARNING', `Failed to update ETH equivalent values: ${ethError.message}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Failed to update ETH equivalent values: ${ethError.message}`, bot.id);
+      }
       
       // Update parent trade with actual trade results if parentTradeId is provided
       if (parentTradeId && db) {

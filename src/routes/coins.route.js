@@ -15,7 +15,7 @@ const ThreeCommasService = require('../services/threeCommas.service');
  */
 router.get('/accounts/:accountId', async (req, res) => {
   const { accountId } = req.params;
-  console.log({accountId})
+
   
   // Get 3Commas API config
   const apiConfig = await ApiConfig.findOne({ 
@@ -36,8 +36,7 @@ router.get('/accounts/:accountId', async (req, res) => {
       apiConfig.dataValues.apiSecret,
       apiConfig.dataValues.mode || 'paper'
     );
- console.log(apiConfig.dataValues)
-    console.log(threeCommasClient)
+
     // Fetch available coins with balances
     const [error, availableCoins] = await threeCommasClient.getAvailableCoins(accountId);
    
@@ -90,7 +89,7 @@ router.get('/accounts', async (req, res) => {
       apiConfig.secret,
       apiConfig.mode || 'paper'
     );
-    console.log(threeCommasClient)
+ 
     // Fetch accounts
     const accounts = await threeCommasClient.getAccounts();
     
