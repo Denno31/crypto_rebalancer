@@ -12,6 +12,20 @@ const priceService = require('../services/price.service');
 // Helper functions
 const botToResponse = (bot, currentAsset = null) => {
   const coinsArray = bot.getCoinsArray();
+  
+  // Calculate trade stats if trades are available
+  let totalTrades = 0;
+  let successfulTrades = 0;
+  let successRate = 0;
+  
+  if (bot.trades && Array.isArray(bot.trades)) {
+    totalTrades = bot.trades.length;
+    successfulTrades = bot.trades.filter(trade => 
+      trade.status === 'completed' || trade.status === 'success'
+    ).length;
+    successRate = totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 100) : 0;
+  }
+  
   return {
     id: bot.id,
     name: bot.name,
@@ -37,29 +51,44 @@ const botToResponse = (bot, currentAsset = null) => {
     currentCoinAmount: currentAsset ? currentAsset.amount : null,
     currentCoinValue: currentAsset ? currentAsset.usdtEquivalent : null,
     currentCoinEntryPrice: currentAsset ? currentAsset.entryPrice : null,
-    botAssets: bot.botAssets
+    botAssets: bot.botAssets,
+    // Add trade statistics
+    tradeStats: {
+      totalTrades,
+      successfulTrades,
+      successRate
+    }
   };
 };
 
 // Get all bots for user
 exports.getAllBots = async (req, res) => {
   try {
-    // Fetch all bots for the user
+    // Fetch all bots for the user with their assets and trades
     const bots = await Bot.findAll({
       where: { userId: req.userId },
       include: [
         {
           model: BotAsset,
           required: false,
-          
           attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
+        },
+        {
+          model: Trade,
+          required: false,
+          attributes: ['id', 'fromCoin', 'toCoin', 'fromAmount', 'toAmount', 'status', 'executedAt']
         }
       ]
     });
-    // Simpler approach - just return basic bot data without assets for now
-    // This helps us avoid any potential schema mismatch issues
-    return res.json(bots.map(bot => botToResponse(bot)));
     
+    // Map to response format with trades included
+    return res.json(bots.map(bot => {
+      const botResponse = botToResponse(bot);
+  
+      // Add trades to the response
+      botResponse.trades = bot.trades || [];
+      return botResponse;
+    }));
     
   } catch (error) {
     console.error('Error getting bots:', error);
@@ -85,6 +114,11 @@ exports.getBotById = async (req, res) => {
           model: BotAsset,
           required: false,
           attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
+        },
+        {
+          model: Trade,
+          required: false,
+          attributes: ['id', 'fromCoin', 'toCoin', 'fromAmount', 'toAmount', 'status', 'executedAt']
         }
       ]
     });
@@ -95,7 +129,12 @@ exports.getBotById = async (req, res) => {
       });
     }
     
-    return res.json(botToResponse(bot));
+    // Get the response with trade stats included
+    const botResponse = botToResponse(bot);
+    // Add trades array to the response
+    botResponse.trades = bot.trades || [];
+    
+    return res.json(botResponse);
   } catch (error) {
     console.error('Error getting bot:', error);
     return res.status(500).json({
