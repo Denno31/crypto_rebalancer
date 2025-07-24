@@ -7,6 +7,7 @@ const CoinSnapshot = db.coinSnapshot;
 const CoinUnitTracker = db.coinUnitTracker;
 const PriceHistory = db.priceHistory;
 const LogEntry = db.logEntry;
+const Bot = db.bot;
 const priceService = require('./price.service');
 
 class SnapshotManagerService {
@@ -87,6 +88,7 @@ class SnapshotManagerService {
             source
           });
           
+       
           console.log(`Created initial snapshot for ${coin}: ${price} ${referenceCoin}`);
           await LogEntry.log(db, 'INFO', `Created initial snapshot for ${coin}: ${price} ${referenceCoin}`, botId);
           
@@ -157,6 +159,7 @@ class SnapshotManagerService {
         // Update snapshot with current units
         snapshot.unitsHeld = units;
         snapshot.wasEverHeld = true;
+        // snapshot.initialPrice = price;
         
         // Update max units if current amount is higher
         if (units > snapshot.maxUnitsReached) {

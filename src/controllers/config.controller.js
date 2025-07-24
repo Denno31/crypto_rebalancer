@@ -31,7 +31,7 @@ exports.getApiConfigs = async (req, res) => {
 
 exports.updateApiConfig = async (req, res) => {
   try {
-    console.log(req.body)
+    
     const { name } = req.params;
     // Use snake_case from API, consistent with frontend
     const { api_key, api_secret, mode } = req.body;
@@ -116,7 +116,7 @@ exports.getSystemConfig = async (req, res) => {
 };
 
 exports.updateSystemConfig = async (req, res) => {
-  console.log('the system config', req.body)
+
   try {
     // Use snake_case from API, consistent with frontend
     const {

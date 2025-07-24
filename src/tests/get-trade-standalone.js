@@ -182,7 +182,7 @@ async function getTradeById(tradeId) {
 }
 
 // Get trade ID from command line arguments or use a default value
-const tradeId = process.argv[2] || '35077338'; // Replace with your trade ID if not provided
+const tradeId = process.argv[2] || '35152568'; // Replace with your trade ID if not provided
 
 // Execute the function
 getTradeById(tradeId)
