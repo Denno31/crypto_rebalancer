@@ -428,7 +428,7 @@ class ThreeCommasService {
     accountId, fromCoin, toCoin, amount, 
     useTakeProfit = false, takeProfitPercentage = 2.0, 
     mode = 'live', isIndirectTrade = false, forcedPositionType = null,
-    parentTradeId = null, db = null, enhancedSwapService = null
+    parentTradeId = null, db = null, enhancedSwapService = null,preferredStablecoin = 'USDT'
   ) {
     
     console.log('Executing trade with API credentials:');
@@ -493,14 +493,15 @@ class ThreeCommasService {
       // Always use a two-step trade through USDT as an intermediate currency
       // But only if this isn't already an indirect trade (to prevent infinite recursion)
       // And only if neither fromCoin nor toCoin is already USDT (to avoid unnecessary trades)
-      if (!isIndirectTrade && fromCoin !== 'USDT' && toCoin !== 'USDT') {
+      //use prefered stable coin instead to avoid hardcording
+      if (!isIndirectTrade && fromCoin !== preferredStablecoin && toCoin !== preferredStablecoin) {
         console.log(`Using USDT as an intermediate currency for ${fromCoin} → ${toCoin} trade`);
-        const intermediateCoin = 'USDT'; // Default intermediate coin
+        const intermediateCoin = preferredStablecoin; // Default intermediate coin
         
         // Step 1: Sell fromCoin to get USDT
         console.log(`Step 1: Selling ${fromCoin} → ${intermediateCoin}`);
         const [error1, trade1] = await this.executeTrade(
-          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true
+          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true,null,null,null,preferredStablecoin
         );
         
         // Record step 1 trade in database if parent trade ID is provided
@@ -714,7 +715,7 @@ class ThreeCommasService {
           // Since we're doing a BUY, we should specify how many target coin units to purchase
           const [error2, tradeResult] = await this.executeTrade(
             accountId, intermediateCoin, toCoin, adjustedTargetCoinUnits, 
-            useTakeProfit, takeProfitPercentage, mode, true, 'buy'
+            useTakeProfit, takeProfitPercentage, mode, true, 'buy',null,null,null,preferredStablecoin
           );
           
           if (error2) {

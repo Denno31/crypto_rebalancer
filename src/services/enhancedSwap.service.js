@@ -681,7 +681,8 @@ class EnhancedSwapService {
           null, // forcedPositionType
           parentTradeId, // Pass parent trade ID for step tracking
           db, // Pass database connection
-          enhancedSwapService // Pass service reference
+          enhancedSwapService, // Pass service reference
+          bot.preferredStablecoin
         );
         
         if (error || !response) {
@@ -772,6 +773,10 @@ class EnhancedSwapService {
       
       // Update current coin in bot record
       await bot.update({ currentCoin: toCoin });
+
+      const newGlobalPeak = Math.max(bot.globalPeakValue, netValueUSDT)
+      
+      await bot.update({ globalPeakValue: newGlobalPeak });
       
       // Calculate ETH equivalent value of the new position and update global peak if necessary
       try {
