@@ -79,8 +79,6 @@ exports.getAvailableCoins = async (req, res) => {
       });
     }
     
-    console.log(`Getting available coins for account ${accountId}`);
-    
     // Find 3commas API config for this user
     const config = await ApiConfig.findOne({
       where: {
