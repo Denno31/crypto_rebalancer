@@ -6,7 +6,6 @@ const ThreeCommasService = require('../services/threeCommas.service');
 // Get user's trading accounts
 exports.getAccounts = async (req, res) => {
   try {
-    console.log("=== Getting trading accounts ===");
     console.log(`User ID: ${req.userId}`);
     
     // Find 3commas API config for this user
@@ -38,9 +37,9 @@ exports.getAccounts = async (req, res) => {
     console.log("Making request to 3commas API...");
     const [error, accounts] = await p3cw.getAccounts();
     
-    console.log(`Error: ${JSON.stringify(error)}`);
-    console.log(`Accounts response type: ${typeof accounts}`);
-    console.log(`Accounts: ${JSON.stringify(accounts)}`);
+    // console.log(`Error: ${JSON.stringify(error)}`);
+    // console.log(`Accounts response type: ${typeof accounts}`);
+    // console.log(`Accounts: ${JSON.stringify(accounts)}`);
     
     if (error) {
       console.log(`3commas API error: ${JSON.stringify(error)}`);

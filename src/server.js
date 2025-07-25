@@ -11,7 +11,7 @@ const botRoutes = require('./routes/bot.routes');
 const configRoutes = require('./routes/config.routes');
 const accountRoutes = require('./routes/account.routes');
 const deviationRoutes = require('./routes/deviation.routes');
-const coinRoutes = require('./routes/coins.route');
+const coinRoutes = require('./routes/coins.routes');
 
 // Import database
 const db = require('./models');

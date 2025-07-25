@@ -70,7 +70,7 @@ class ThreeCommasService {
       .update(message)
       .digest('hex');
     
-    console.log(`Python-style signature for path: ${path}, data length: ${data.length}`);
+    
     
     return signature;
   }
