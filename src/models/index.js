@@ -89,6 +89,7 @@ db.coinSnapshot = require('./coinSnapshot.model.js')(sequelize, Sequelize);
 db.botAsset = require('./botAsset.model.js')(sequelize, Sequelize);
 db.coinDeviation = require('./coinDeviation.model.js')(sequelize, Sequelize);
 db.assetLock = require('./assetLock.model.js')(sequelize, Sequelize);
+db.tradeStep = require('./tradeStep.model.js')(sequelize, Sequelize);
 
 // Define relationships
 db.user.hasMany(db.apiConfig, { foreignKey: 'userId' });

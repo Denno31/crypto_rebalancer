@@ -211,94 +211,57 @@ class SwapDecisionService {
   async checkGlobalProgressProtection(bot, candidate) {
     try {
       const botId = bot.id;
-      
-      // 1. Calculate what the result would be if we made this swap
       const currentCoin = bot.currentCoin;
-      const targetCoin = candidate.coin;
-      
-      // Get current asset information
-      const BotAsset = db.botAsset;
-      const currentAsset = await BotAsset.findOne({
+      const commissionRate = bot.commissionRate || 0.002; // 0.2% default
+      const threshold = bot.globalThresholdPercentage || 10; // Default: 10% buffer
+  
+      // 1. Get current asset info
+      const currentAsset = await db.botAsset.findOne({
         where: { botId, coin: currentCoin }
       });
-      
+  
       if (!currentAsset) {
         return {
           allowed: false,
           reason: `Missing asset data for current coin ${currentCoin}`
         };
       }
-      
-      // Calculate value after swap including commission
-      const commissionRate = bot.commissionRate || 0.002;
-      const currentValue = currentAsset.amount * candidate.metrics.currentPrice;
+  
+      // 2. Calculate net value in USDT after commission
+      const currentPrice = candidate.metrics.currentPrice;
+      const currentValue = currentAsset.amount * currentPrice;
       const netValue = currentValue * (1 - commissionRate);
-      const estimatedNewUnits = netValue / candidate.price;
-      
-      // 2. Compare against global peak value
-      // If we have a global peak value in ETH, we can use that for comparison
-      if (bot.globalPeakValueInETH && bot.globalPeakValueInETH > 0) {
-        // We'll need to convert our estimated value to ETH for comparison
-        // This would typically be done with a price service call
-        // For this example, we'll assume the conversion happens here
-        
-        // Set the minimum acceptable value (e.g., 90% of peak)
-        const minAcceptableValue = bot.globalPeakValueInETH * (1 - (bot.globalThresholdPercentage / 100));
-        
-        // Get the current coin snapshot to check its ETH value
-        const currentSnapshot = await CoinSnapshot.findOne({
-          where: { botId, coin: currentCoin }
-        });
-        
-        if (currentSnapshot && currentSnapshot.ethEquivalentValue < minAcceptableValue) {
+  
+      // 3. Compare with global peak (in USDT)
+      if (bot.globalPeakValue && bot.globalPeakValue > 0) {
+        const minAcceptableValue = bot.globalPeakValue * (1 - threshold / 100);
+        if (netValue < minAcceptableValue) {
           return {
             allowed: false,
-            reason: `Value would drop below ${(100 - bot.globalThresholdPercentage)}% of peak value`,
-            currentValue: currentSnapshot.ethEquivalentValue,
-            minAcceptable: minAcceptableValue,
-            peakValue: bot.globalPeakValueInETH
+            reason: `Swap would reduce value below ${100 - threshold}% of peak.`,
+            netValue: netValue.toFixed(2),
+            minAcceptable: minAcceptableValue.toFixed(2),
+            peakValue: bot.globalPeakValue.toFixed(2)
           };
         }
       }
-      
-      // 3. For the target coin, check if we would get more units than before
-      const targetSnapshot = await CoinSnapshot.findOne({
-        where: { botId, coin: targetCoin }
-      });
-      
-      // If we've held this coin before and would get fewer units, block the swap
-      if (targetSnapshot && targetSnapshot.wasEverHeld && 
-          estimatedNewUnits < targetSnapshot.maxUnitsReached) {
-        // Calculate the percentage difference
-        const unitDiff = ((estimatedNewUnits / targetSnapshot.maxUnitsReached) - 1) * 100;
-        
-        return {
-          allowed: false,
-          reason: `Would get ${-unitDiff.toFixed(2)}% fewer units than previous max (${estimatedNewUnits.toFixed(6)} vs ${targetSnapshot.maxUnitsReached.toFixed(6)})`,
-          estimatedUnits: estimatedNewUnits,
-          previousMax: targetSnapshot.maxUnitsReached,
-          percentDifference: unitDiff
-        };
-      }
-      
-      // All checks pass
+  await LogEntry.log(db, 'INFO', `Global protection passed for ${bot.name}`, bot.id);
+      // ✅ Global protection passed
       return {
         allowed: true,
-        estimatedUnits: estimatedNewUnits
+        netValue: netValue.toFixed(2)
       };
-      
     } catch (error) {
-      console.error(`Progress protection check error: ${error.message}`);
-      await LogEntry.log(db, 'ERROR', `Progress protection check error: ${error.message}`, bot.id);
-      
-      // Default to blocking the swap if there's an error in the check
+      console.error(`Global protection error: ${error.message}`);
+      await LogEntry.log(db, 'ERROR', `Global protection error: ${error.message}`, bot.id);
+  
       return {
         allowed: false,
-        reason: `Error during progress protection check: ${error.message}`,
-        error: error.message
+        reason: `Error during global protection check: ${error.message}`
       };
     }
   }
+  
   
   /**
    * Track overall performance metrics of the bot

@@ -116,7 +116,7 @@ exports.getSystemConfig = async (req, res) => {
 };
 
 exports.updateSystemConfig = async (req, res) => {
-  console.log('the system config', req.body)
+
   try {
     // Use snake_case from API, consistent with frontend
     const {

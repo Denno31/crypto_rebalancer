@@ -34,8 +34,8 @@ class ThreeCommasService {
     
     // Define minimum amounts based on coin type as a class property
     this.minimumAmounts = {
-      'BTC': 0.0001,   // Minimum BTC trade size
-      'ETH': 0.001,    // Minimum ETH trade size
+      'BTC': 0.0000001,   // Minimum BTC trade size
+      'ETH': 0.000001,    // Minimum ETH trade size
       'ADA': 10,       // Minimum ADA trade size based on our successful test
       'USDT': 10,      // Minimum USDT trade size
       'DOGE': 10,      // DOGE has low value per coin, needs higher minimums
@@ -419,12 +419,16 @@ class ThreeCommasService {
    * @param {String} mode - Trading mode (live or paper)
    * @param {Boolean} isIndirectTrade - Whether this is part of a multi-step trade via USDT
    * @param {String} [forcedPositionType] - Optional parameter to force a specific position type ('buy' or 'sell')
+   * @param {Number|String} [parentTradeId] - Parent trade ID for multi-step trades
+   * @param {Object} [db] - Database connection for recording trade steps
+   * @param {Object} [enhancedSwapService] - Service for inserting trade steps
    * @returns {Promise<Array>} - [error, response]
    */
   async executeTrade(
     accountId, fromCoin, toCoin, amount, 
     useTakeProfit = false, takeProfitPercentage = 2.0, 
-    mode = 'live', isIndirectTrade = false, forcedPositionType = null
+    mode = 'live', isIndirectTrade = false, forcedPositionType = null,
+    parentTradeId = null, db = null, enhancedSwapService = null,preferredStablecoin = 'USDT'
   ) {
     
     console.log('Executing trade with API credentials:');
@@ -489,15 +493,19 @@ class ThreeCommasService {
       // Always use a two-step trade through USDT as an intermediate currency
       // But only if this isn't already an indirect trade (to prevent infinite recursion)
       // And only if neither fromCoin nor toCoin is already USDT (to avoid unnecessary trades)
-      if (!isIndirectTrade && fromCoin !== 'USDT' && toCoin !== 'USDT') {
+      //use prefered stable coin instead to avoid hardcording
+      if (!isIndirectTrade && fromCoin !== preferredStablecoin && toCoin !== preferredStablecoin) {
         console.log(`Using USDT as an intermediate currency for ${fromCoin} → ${toCoin} trade`);
-        const intermediateCoin = 'USDT'; // Default intermediate coin
+        const intermediateCoin = preferredStablecoin; // Default intermediate coin
         
         // Step 1: Sell fromCoin to get USDT
         console.log(`Step 1: Selling ${fromCoin} → ${intermediateCoin}`);
         const [error1, trade1] = await this.executeTrade(
-          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true
+          accountId, fromCoin, intermediateCoin, amount, false, 0, mode, true,null,null,null,preferredStablecoin
         );
+        
+        // Record step 1 trade in database if parent trade ID is provided
+        let step1Record = null;
         
         if (error1) {
           console.error(`Failed in step 1 (${fromCoin} → ${intermediateCoin}):`, error1);
@@ -506,6 +514,7 @@ class ThreeCommasService {
         
         console.log(`✅ Step 1 completed. Trade ID: ${trade1.tradeId}`);
         
+        // Wait for trade completion to get accurate data
         console.log(`Waiting for first trade (ID: ${trade1.tradeId}) to complete...`);
         const [statusError, statusData] = await this.waitForTradeCompletion(trade1.tradeId);
         
@@ -514,80 +523,317 @@ class ThreeCommasService {
           return [statusError, null];
         }
         
+        // Record step 1 trade with the completed trade data
+        if (parentTradeId && db && enhancedSwapService) {
+          try {
+            // Validate parentTradeId before using it
+            if (typeof parentTradeId !== 'number' && isNaN(parseInt(parentTradeId))) {
+              console.error(`Invalid parent trade ID: ${parentTradeId}, cannot record step 1 trade`);
+            } else {
+              console.log(`Recording step 1 trade with parent ID: ${parentTradeId} (type: ${typeof parentTradeId})`);
+            
+            // Extract trade amounts and prices from status data if available
+            let resultAmount = 0;
+            let fromAmount = amount;
+            let fromPrice = 0;
+            let toPrice = 0;
+            let commissionAmount = 0;
+            let commissionRate = 0;
+            
+            // Try to extract more accurate data from the completed trade status
+            if (statusData && statusData.raw) {
+              const raw = statusData.raw;
+              
+              // Extract resulting amount (what we received)
+              if (raw.data && raw.data.entered_total) {
+                resultAmount = parseFloat(raw.data.entered_total);
+              } else if (raw.position && raw.position.total && raw.position.total.value) {
+                resultAmount = parseFloat(raw.position.total.value);
+              }
+              
+              // Extract prices if available
+              if (raw.position) {
+                if (raw.position.done_average_price) {
+                  toPrice = parseFloat(raw.position.done_average_price);
+                }
+                if (raw.position.base_price) {
+                  fromPrice = parseFloat(raw.position.base_price);
+                }
+              }
+              
+              // Extract commission if available
+              if (raw.data && raw.data.commission) {
+                commissionAmount = parseFloat(raw.data.commission);
+                // Calculate rate if we have the original amount
+                if (fromAmount > 0) {
+                  commissionRate = commissionAmount / (fromAmount * fromPrice);
+                }
+              }
+            }
+            
+            // Ensure parentTradeId is a number
+            const parsedParentId = parseInt(parentTradeId);
+            console.log(`Using parent trade ID: ${parsedParentId} for step 1 trade recording`);
+            
+            step1Record = await enhancedSwapService.insertTradeStep(db, parsedParentId, 1, {
+              tradeId: trade1.tradeId,
+              fromCoin,
+              toCoin: intermediateCoin,
+              fromAmount: fromAmount,
+              toAmount: resultAmount,
+              fromPrice: fromPrice,
+              toPrice: toPrice,
+              commissionAmount: commissionAmount,
+              commissionRate: commissionRate,
+              status: 'completed',
+              executedAt: new Date(),
+              completedAt: new Date(),
+              botId: null, // This would be added in enhancedSwap service
+              exchangeId: accountId,
+              rawData: statusData.raw
+            });
+            console.log(`Step 1 trade recorded with ID: ${step1Record?.id || 'unknown'}, amount: ${resultAmount} ${intermediateCoin}`);
+            }
+          } catch (recordError) {
+            console.error(`Error recording step 1 trade: ${recordError.message}`);
+            console.error(`Error stack: ${recordError.stack}`);
+            // Continue with trade even if recording fails
+          }
+        }
+        
         // Get the resulting amount of USDT from the first trade
-        // We need to extract this from the trade data
-        let resultAmount;
+        // Extract from the statusData we obtained earlier
+        let secondStepAmount;
         try {
           // First try to use entered_amount from data (most reliable field)
           // This is the actual amount that was acquired in the trade
           if (statusData.raw?.data?.entered_total) {
-            resultAmount = parseFloat(statusData.raw.data.entered_total);
-            console.log(`Using entered_total field: ${resultAmount} ${intermediateCoin}`);
-          }
-          // Use entered_total if available (this is what we got in USDT)
-          else if (statusData.raw?.data?.entered_total) {
-            resultAmount = parseFloat(statusData.raw.data.entered_total);
-            console.log(`Using entered_total field: ${resultAmount} ${intermediateCoin}`);
+            secondStepAmount = parseFloat(statusData.raw.data.entered_total);
+            console.log(`Using entered_total field: ${secondStepAmount} ${intermediateCoin}`);
           }
           // Fall back to other methods if the primary ones aren't available
-          else if (statusData.raw.position && statusData.raw.position.total && statusData.raw.position.total.value) {
-            resultAmount = parseFloat(statusData.raw.position.total.value);
-            console.log(`Using position.total.value: ${resultAmount} ${intermediateCoin}`);
+          else if (statusData.raw?.position?.total?.value) {
+            secondStepAmount = parseFloat(statusData.raw.position.total.value);
+            console.log(`Using position.total.value: ${secondStepAmount} ${intermediateCoin}`);
           } 
-          else if (statusData.raw.completed_safety_orders_data && statusData.raw.completed_safety_orders_data.length > 0) {
-            resultAmount = parseFloat(statusData.raw.completed_safety_orders_data[0].done_average_price) * 
+          else if (statusData.raw?.completed_safety_orders_data?.length > 0) {
+            secondStepAmount = parseFloat(statusData.raw.completed_safety_orders_data[0].done_average_price) * 
                           parseFloat(statusData.raw.completed_safety_orders_data[0].done_quantity);
-            console.log(`Using completed_safety_orders calculation: ${resultAmount} ${intermediateCoin}`);
+            console.log(`Using completed_safety_orders calculation: ${secondStepAmount} ${intermediateCoin}`);
           } 
-          else if (statusData.raw.completed_manual_safety_orders && statusData.raw.completed_manual_safety_orders.length > 0) {
-            resultAmount = parseFloat(statusData.raw.completed_manual_safety_orders[0].done_average_price) * 
+          else if (statusData.raw?.completed_manual_safety_orders?.length > 0) {
+            secondStepAmount = parseFloat(statusData.raw.completed_manual_safety_orders[0].done_average_price) * 
                           parseFloat(statusData.raw.completed_manual_safety_orders[0].done_quantity);
-            console.log(`Using completed_manual_safety_orders calculation: ${resultAmount} ${intermediateCoin}`);
+            console.log(`Using completed_manual_safety_orders calculation: ${secondStepAmount} ${intermediateCoin}`);
           } 
-          else if (statusData.raw.position && statusData.raw.position.done_quantity && statusData.raw.position.done_average_price) {
-            resultAmount = parseFloat(statusData.raw.position.done_quantity) * 
+          else if (statusData.raw?.position?.done_quantity && statusData.raw?.position?.done_average_price) {
+            secondStepAmount = parseFloat(statusData.raw.position.done_quantity) * 
                           parseFloat(statusData.raw.position.done_average_price);
-            console.log(`Using position calculation: ${resultAmount} ${intermediateCoin}`);
+            console.log(`Using position calculation: ${secondStepAmount} ${intermediateCoin}`);
           } 
           else {
             // If we can't determine the exact amount, estimate it (less accurate)
             // Use the amount we sent minus an estimated fee
-            resultAmount = amount * 0.998; // Assuming 0.2% fee
-            console.warn(`Could not determine exact resulting amount. Estimating ${resultAmount} ${intermediateCoin}`);            
+            secondStepAmount = amount * 0.998; // Assuming 0.2% fee
+            console.warn(`Could not determine exact resulting amount. Estimating ${secondStepAmount} ${intermediateCoin}`);            
           }
         } catch (error) {
           console.error('Error calculating resulting amount:', error);
-          resultAmount = amount * 0.998; // Fallback to estimation
-          console.warn(`Failed to parse trade result. Estimating ${resultAmount} ${intermediateCoin}`);
+          secondStepAmount = amount * 0.998; // Fallback to estimation
+          console.warn(`Failed to parse trade result. Estimating ${secondStepAmount} ${intermediateCoin}`);
         }
         
-        console.log(`First trade resulted in approximately ${resultAmount} ${intermediateCoin}`);
+        console.log(`First trade resulted in approximately ${secondStepAmount} ${intermediateCoin}`);
         
         // Step 2: Buy toCoin with the USDT from step 1
         // Ensure we have a valid number for the amount and apply minimum trade amount requirements
-        let secondStepAmount = parseFloat(resultAmount);
+        secondStepAmount = parseFloat(secondStepAmount);
         if (isNaN(secondStepAmount) || secondStepAmount <= 0) {
-          console.error(`Invalid resultAmount: ${resultAmount}, using fallback estimation`);
+          console.error(`Invalid amount from first trade, using fallback estimation`);
           secondStepAmount = amount * 0.998; // Fallback estimation
         }
         
         // Apply minimum amount rules for USDT (or other intermediate coin)
-        const intermediateMinAmount = this.minimumAmounts[intermediateCoin] || 10;
-        if (secondStepAmount < intermediateMinAmount) {
-          console.warn(`Warning: Second step amount ${secondStepAmount} ${intermediateCoin} is below minimum ${intermediateMinAmount}. Adjusting to minimum.`);
-          secondStepAmount = intermediateMinAmount;
+        // const intermediateMinAmount = this.minimumAmounts[intermediateCoin] || 10;
+        // if (secondStepAmount < intermediateMinAmount) {
+        //   console.warn(`Warning: Second step amount ${secondStepAmount} ${intermediateCoin} is below minimum ${intermediateMinAmount}. Adjusting to minimum.`);
+        //   secondStepAmount = intermediateMinAmount;
+        // }
+        
+        console.log(`Step 2: Preparing to buy ${toCoin} with ${secondStepAmount} ${intermediateCoin}`);
+        
+        // First, we need to convert the USDT amount to the equivalent amount in the target coin
+        // Get available coins to check current prices
+        console.log(`Fetching available coins to get current prices for conversion...`);
+        const [coinsError, availableCoins] = await this.getAvailableCoins(accountId);
+        
+        if (coinsError) {
+          console.error(`Failed to get available coins for conversion: ${coinsError.message}`);
+          return [coinsError, null];
         }
         
-        console.log(`Step 2: Buying ${toCoin} with ${secondStepAmount} ${intermediateCoin}`);
-        console.log(`Using position type 'buy' for second step (USDT → destination coin)`);
+        // Find the target coin data to get its price in USDT
+        const toCoinData = availableCoins.find(c => c.coin === toCoin);
+        if (!toCoinData) {
+          console.error(`Could not find price data for ${toCoin} in available coins`);
+          return [{ message: `Could not find price data for ${toCoin}` }, null];
+        }
+        
+        // Calculate the price per unit of the target coin
+        // Available coins provides amount and amountInUsd, so we calculate price = amountInUsd / amount
+        if (!toCoinData.amount || !toCoinData.amountInUsd || toCoinData.amount <= 0) {
+          console.error(`Missing required data for ${toCoin}: amount=${toCoinData.amount}, amountInUsd=${toCoinData.amountInUsd}`);
+          console.log('Full coin data:', JSON.stringify(toCoinData));
+          return [{ message: `Missing price data for ${toCoin}` }, null];
+        }
+        
+        // Calculate price per unit
+        const toCoinPriceInUSDT = toCoinData.amountInUsd / toCoinData.amount;
+        
+        console.log(`${toCoin} price calculation: ${toCoinData.amountInUsd} USD / ${toCoinData.amount} ${toCoin} = ${toCoinPriceInUSDT} USD per ${toCoin}`);
+        
+        if (!toCoinPriceInUSDT || toCoinPriceInUSDT <= 0) {
+          console.error(`Invalid calculated price for ${toCoin}: ${toCoinPriceInUSDT}`);
+          return [{ message: `Invalid calculated price for ${toCoin}` }, null];
+        }
+        
+        // Convert USDT amount to target coin units
+        // Formula: units = USDT amount / price per unit
+        const targetCoinUnits = secondStepAmount / toCoinPriceInUSDT;
+        
+        // Apply a small safety margin (0.5%) to account for price fluctuations
+        const safetyMargin = 0.995;
+        const adjustedTargetCoinUnits = targetCoinUnits * safetyMargin;
+        
+        console.log(`Converting ${secondStepAmount} ${intermediateCoin} to approximately ${adjustedTargetCoinUnits} ${toCoin} units`);
+        console.log(`Calculation: ${secondStepAmount} ${intermediateCoin} ÷ ${toCoinPriceInUSDT} ${intermediateCoin}/${toCoin} × ${safetyMargin} (safety margin)`);
+        console.log(`Using position type 'buy' for second step (${intermediateCoin} → ${toCoin})`);
         
         let trade2;
         try {
-          // Execute second step with explicit BUY position type
+          // Execute second step with the converted amount of target coin units
+          // Since we're doing a BUY, we should specify how many target coin units to purchase
           const [error2, tradeResult] = await this.executeTrade(
-            accountId, intermediateCoin, toCoin, secondStepAmount, 
-            useTakeProfit, takeProfitPercentage, mode, true, 'buy'
+            accountId, intermediateCoin, toCoin, adjustedTargetCoinUnits, 
+            useTakeProfit, takeProfitPercentage, mode, true, 'buy',null,null,null,preferredStablecoin
           );
+          
+          if (error2) {
+            console.error(`Failed in step 2 (${intermediateCoin} → ${toCoin}):`, error2);
+            
+            // Check if it's a 422 error (validation error)
+            if (error2.code === 422 || (error2.message && error2.message.includes('422'))) {
+              console.error('This appears to be a validation error. Common causes include:');
+              console.error('- Insufficient funds in the account');
+              console.error('- Trading amount below exchange minimum');
+              console.error('- Invalid pair format');
+              
+              // Get more details about the account balance
+              try {
+                const [balanceErr, balanceData] = await this.request('accounts', `${accountId}/balance_chart_data`, { date_from: new Date().toISOString() });
+                if (!balanceErr && balanceData) {
+                  const usdtBalance = balanceData.currencies.find(c => c.code === intermediateCoin);
+                  console.log(`Current ${intermediateCoin} balance:`, usdtBalance);
+                }
+              } catch (innerErr) {
+                console.error('Could not fetch balance data:', innerErr.message);
+              }
+            }
+            
+            return [error2, null];
+          }
+          
+          // Store trade2 from the successful result
+          trade2 = tradeResult;
+          console.log(`✅ Step 2 completed. Trade ID: ${trade2.tradeId}`);
+          
+          // Wait for trade completion to get accurate data
+          console.log(`Waiting for second trade (ID: ${trade2.tradeId}) to complete...`);
+          const [step2StatusError, step2StatusData] = await this.waitForTradeCompletion(trade2.tradeId);
+          
+          // Record step 2 trade in database if parent trade ID is provided
+          let step2Record = null;
+          if (parentTradeId && db && enhancedSwapService) {
+            try {
+              // Validate parentTradeId before using it
+              if (typeof parentTradeId !== 'number' && isNaN(parseInt(parentTradeId))) {
+                console.error(`Invalid parent trade ID: ${parentTradeId}, cannot record step 2 trade`);
+              } else {
+                console.log(`Recording step 2 trade with parent ID: ${parentTradeId} (type: ${typeof parentTradeId})`);
+              
+              // Extract trade amounts and prices from status data if available
+              let resultAmount = 0;
+              let fromAmount = secondStepAmount;
+              let fromPrice = 0;
+              let toPrice = 0;
+              let commissionAmount = 0;
+              let commissionRate = 0;
+              
+              // Try to extract more accurate data from the completed trade status
+              if (!step2StatusError && step2StatusData && step2StatusData.raw) {
+                const raw = step2StatusData.raw;
+                
+                // Extract resulting amount (what we received)
+                if (raw.data && raw.data.entered_amount) {
+                  resultAmount = parseFloat(raw.data.entered_amount);
+                } else if (raw.position && raw.position.quantity) {
+                  resultAmount = parseFloat(raw.position.quantity);
+                } else if (raw.position && raw.position.done_quantity) {
+                  resultAmount = parseFloat(raw.position.done_quantity);
+                }
+                
+                // Extract prices if available
+                if (raw.position) {
+                  if (raw.position.done_average_price) {
+                    toPrice = parseFloat(raw.position.done_average_price);
+                  }
+                  if (raw.position.base_price) {
+                    fromPrice = parseFloat(raw.position.base_price);
+                  }
+                }
+                
+                // Extract commission if available
+                if (raw.data && raw.data.commission) {
+                  commissionAmount = parseFloat(raw.data.commission);
+                  // Calculate rate if we have the original amount
+                  if (fromAmount > 0) {
+                    commissionRate = commissionAmount / (fromAmount * fromPrice);
+                  }
+                }
+              } else {
+                // Fall back to initial trade data if status check failed
+                resultAmount = trade2.amount || 0;
+              }
+              
+              // Ensure parentTradeId is a number
+              const parsedParentId = parseInt(parentTradeId);
+              console.log(`Using parent trade ID: ${parsedParentId} for step 2 trade recording`);
+              
+              step2Record = await enhancedSwapService.insertTradeStep(db, parsedParentId, 2, {
+                tradeId: trade2.tradeId,
+                fromCoin: intermediateCoin,
+                toCoin,
+                fromAmount: fromAmount,
+                toAmount: resultAmount,
+                fromPrice: fromPrice,
+                toPrice: toPrice,
+                commissionAmount: commissionAmount,
+                commissionRate: commissionRate,
+                status: 'completed',
+                executedAt: new Date(),
+                completedAt: new Date(),
+                botId: null, // This would be added in enhancedSwap service
+                exchangeId: accountId,
+                rawData: step2StatusError ? trade2.raw : step2StatusData.raw
+              });
+              console.log(`Step 2 trade recorded with ID: ${step2Record?.id || 'unknown'}, amount: ${resultAmount} ${toCoin}`);
+              }
+            } catch (recordError) {
+              console.error(`Error recording step 2 trade: ${recordError.message}`);
+              console.error(`Error stack: ${recordError.stack}`);
+              // Continue with trade even if recording fails
+            }
+          }
           
           if (error2) {
             console.error(`Failed in step 2 (${intermediateCoin} → ${toCoin}):`, error2);
@@ -648,13 +894,13 @@ class ThreeCommasService {
       
       // Get the minimum for this coin, default to 10 if not specified
       // 10 is our "known working value" from previous successful tests
-      const coinMinimum = this.minimumAmounts[fromCoin] || 10;
+      // const coinMinimum = this.minimumAmounts[fromCoin] || 10;
       
       // Check if requested amount is below the minimum
-      if (tradeAmount < coinMinimum) {
-        console.warn(`Warning: Trade amount ${tradeAmount} ${fromCoin} is below minimum ${coinMinimum}. Adjusting to minimum.`);
-        tradeAmount = coinMinimum;
-      }
+      // if (tradeAmount < coinMinimum) {
+      //   console.warn(`Warning: Trade amount ${tradeAmount} ${fromCoin} is below minimum ${coinMinimum}. Adjusting to minimum.`);
+      //   tradeAmount = coinMinimum;
+      // }
       
       console.log(`Using trade amount: ${tradeAmount} ${fromCoin} (${positionType})`);
       
@@ -753,7 +999,7 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, statusData]
    */
   async waitForTradeCompletion(tradeId) {
-    const maxAttempts = 30; // Increased from 10
+    const maxAttempts = 15; // Increased from 10
     const waitTime = 3000; // Check every 3 seconds
     
     for (let attempt = 0; attempt < maxAttempts; attempt++) {

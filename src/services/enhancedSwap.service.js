@@ -15,6 +15,7 @@ const Bot = db.bot;
 const BotAsset = db.botAsset;
 const Trade = db.trade;
 const CoinSnapshot = db.coinSnapshot;
+const TradeStep = db.tradeStep;
 
 /**
  * Format and print a log message with timestamp, level, and bot info
@@ -164,13 +165,43 @@ class EnhancedSwapService {
         logMessage('INFO', `Swap recommended: ${bot.currentCoin} → ${targetCoin} with score ${swapEvaluation.bestCandidate.scoreDetails.rawScore.toFixed(2)}`, bot.name);
         await LogEntry.log(db, 'TRADE', `Swap recommended: ${bot.currentCoin} → ${targetCoin} with score ${swapEvaluation.bestCandidate.scoreDetails.rawScore.toFixed(2)}`, botId);
         
-        // Execute the trade
+        //  create a new trade here (parent trade)
+        const parentTrade = await db.trade.create({
+          botId:bot.id,
+          tradeId:'parent-'+new Date().toString(),
+          fromCoin:bot.currentCoin,
+          toCoin:targetCoin,
+          fromAmount:0,
+          toAmount:0,
+          fromPrice:0,
+          toPrice:0,
+          commissionRate:0,
+          commissionAmount:0,
+          status:'in_progress',
+          executedAt:new Date(),
+        })
+
+        if(!parentTrade){
+          logMessage('ERROR', `Failed to create parent trade`, bot.name);
+          await LogEntry.log(db, 'ERROR', `Failed to create parent trade`, botId);
+          return { 
+            success: false, 
+            message: 'Failed to create parent trade',
+            trade: null,
+            evaluation: swapEvaluation
+          };
+        }
+
+        // Execute the trade and pass parent trade ID to enable step recording
         const tradeResult = await this.executeTrade(
           bot,
           threeCommasClient,
           bot.currentCoin,
           targetCoin,
-          swapEvaluation.bestCandidate
+          swapEvaluation.bestCandidate,
+          parentTrade.id, // Pass the parent trade ID
+          db, // Pass database connection
+          this // Pass this service to access insertTradeStep
         );
         
         if (tradeResult.success) {
@@ -219,6 +250,59 @@ class EnhancedSwapService {
   }
   
   /**
+   * Insert a trade step record linked to a parent trade
+   * @param {Object} db Database connection
+   * @param {number|string} parentId Parent trade ID
+   * @param {number} step Step number (1, 2, etc.)
+   * @param {Object} tradeDetails Trade execution details
+   * @returns {Promise<Object>} The created trade step record
+   */
+  async insertTradeStep(db, parentId, step, tradeDetails) {
+    try {
+      // Create the data object with proper snake_case field names to match the database schema
+      const tradeStepData = {
+        parentTradeId: parentId,
+        stepNumber: step,
+        tradeId: tradeDetails.tradeId || `step-${step}-${Date.now()}`,
+        fromCoin: tradeDetails.fromCoin,
+        toCoin: tradeDetails.toCoin,
+        fromAmount: tradeDetails.fromAmount || 0,
+        toAmount: tradeDetails.toAmount || tradeDetails.amount || 0,
+        fromPrice: tradeDetails.fromPrice || 0,
+        toPrice: tradeDetails.toPrice || 0,
+        commissionAmount: tradeDetails.commissionAmount || 0,
+        commissionRate: tradeDetails.commissionRate || 0,
+        status: tradeDetails.status || 'completed',
+        executedAt: tradeDetails.executedAt || new Date(),
+        completedAt: tradeDetails.completedAt || new Date(),
+        rawData: tradeDetails.rawData || null
+      };
+      
+      // Add exchangeId and botId if provided
+      if (tradeDetails.exchangeId) {
+        tradeStepData.exchangeId = tradeDetails.exchangeId;
+      }
+      
+      if (tradeDetails.botId) {
+        tradeStepData.botId = tradeDetails.botId;
+      }
+      
+      let tradeStep;
+
+        // If the model is available, use it
+        console.log('Using TradeStep model to create record');
+        tradeStep = await TradeStep.create(tradeStepData);
+     
+      
+      return tradeStep;
+    } catch (error) {
+      console.error(`Error inserting trade step ${step} for parent ${parentId}:`, error);
+      // Don't throw error so trade execution can continue
+      return null;
+    }
+  }
+  
+  /**
    * Initialize the bot with the initial coin
    * 
    * @param {Object} bot - Bot instance
@@ -252,6 +336,12 @@ class EnhancedSwapService {
           initializedAsset.amount,
           initializedAsset.entryPrice
         );
+
+        // we need to initialize the global peak value in usdt here. if we have a manual budget, use it if not, lets use the 
+        const currentBot = await Bot.findByPk(bot.id);
+        const globalPeakValue = currentBot.manualBudgetAmount || (initializedAsset.amount * initializedAsset.entryPrice);
+        currentBot.globalPeakValue = globalPeakValue;
+        await currentBot.save();
         
         await LogEntry.log(
           db, 
@@ -421,9 +511,12 @@ class EnhancedSwapService {
    * @param {String} fromCoin - Coin to sell
    * @param {String} toCoin - Coin to buy
    * @param {Object} swapCandidate - Swap candidate from evaluateSwapCandidates
+   * @param {Number|String} [parentTradeId] - Parent trade ID for multi-step trades
+   * @param {Object} [db] - Database connection
+   * @param {Object} [enhancedSwapService] - Reference to EnhancedSwapService
    * @returns {Promise<Object>} - Trade result
    */
-  async executeTrade(bot, threeCommasClient, fromCoin, toCoin, swapCandidate) {
+  async executeTrade(bot, threeCommasClient, fromCoin, toCoin, swapCandidate, parentTradeId = null, db = null, enhancedSwapService = null) {
     // Initialize asset lock variable
     let assetLock = null;
     
@@ -582,7 +675,14 @@ class EnhancedSwapService {
           toCoin,
           tradeAmount, // Use real-time calculated amount instead of stored fromAsset.amount
           useTakeProfit,
-          takeProfitPercentage
+          takeProfitPercentage,
+          undefined, // mode (default to 'live')
+          false, // isIndirectTrade (this isn't a multi-step trade step)
+          null, // forcedPositionType
+          parentTradeId, // Pass parent trade ID for step tracking
+          db, // Pass database connection
+          enhancedSwapService, // Pass service reference
+          bot.preferredStablecoin
         );
         
         if (error || !response) {
@@ -673,24 +773,76 @@ class EnhancedSwapService {
       
       // Update current coin in bot record
       await bot.update({ currentCoin: toCoin });
+
+      const newGlobalPeak = Math.max(bot.globalPeakValue, netValueUSDT)
       
-      // Create trade record for history with commission details
-      await Trade.create({
-        botId: bot.id,
-        userId: bot.userId,
-        fromCoin,
-        toCoin,
-        fromAmount: fromAsset.amount,
-        toAmount,
-        fromPrice,
-        toPrice,
-        commissionRate,
-        commissionAmount,
-        priceChange,
-        status: tradeResult.status || 'completed',
-        executed_at: new Date(),
-        tradeId: tradeResult.tradeId || `SIMULATED-${Date.now()}`
-      });
+      await bot.update({ globalPeakValue: newGlobalPeak });
+      
+      // Calculate ETH equivalent value of the new position and update global peak if necessary
+      try {
+        const botService = require('./bot.service');
+        const valueInETH = await botService.convertToETH(bot, netValueUSDT);
+        
+        // Update global peak value in ETH if this is a new peak
+        if (!bot.globalPeakValueInETH || valueInETH > bot.globalPeakValueInETH) {
+          await bot.update({ globalPeakValueInETH: valueInETH });
+          logMessage('INFO', `Updated global peak ETH value to ${valueInETH.toFixed(8)}`, bot.name);
+          await LogEntry.log(db, 'INFO', `Updated global peak ETH value to ${valueInETH.toFixed(8)}`, bot.id);
+        }
+      } catch (ethError) {
+        // Non-critical error, just log it
+        logMessage('WARNING', `Failed to update ETH equivalent values: ${ethError.message}`, bot.name);
+        await LogEntry.log(db, 'WARNING', `Failed to update ETH equivalent values: ${ethError.message}`, bot.id);
+      }
+      
+      // Update parent trade with actual trade results if parentTradeId is provided
+      if (parentTradeId && db) {
+        try {
+          const parentTrade = await db.trade.findByPk(parentTradeId);
+          if (parentTrade) {
+            // Get trade step IDs to concatenate for the parent trade ID
+            let combinedTradeId = parentTrade.tradeId; // Default to the original ID
+            
+            try {
+              // Find all trade steps for this parent trade
+              const tradeSteps = await TradeStep.findAll({
+                where: { parentTradeId: parentTradeId },
+                order: [['stepNumber', 'ASC']]
+              });
+              
+              // If we have trade steps, create a combined ID
+              if (tradeSteps && tradeSteps.length > 0) {
+                const stepIds = tradeSteps.map(step => step.tradeId).filter(id => id);
+                if (stepIds.length > 0) {
+                  combinedTradeId = stepIds.join('-');
+                  logMessage('INFO', `Created combined trade ID from ${stepIds.length} steps: ${combinedTradeId}`, bot.name);
+                }
+              }
+            } catch (stepsError) {
+              logMessage('WARNING', `Could not retrieve trade steps for combined ID: ${stepsError.message}`, bot.name);
+            }
+            
+            await parentTrade.update({
+              fromAmount: fromAsset.amount,
+              toAmount: toAmount,
+              fromPrice: fromPrice,
+              toPrice: toPrice,
+              commissionRate: commissionRate,
+              commissionAmount: commissionAmount,
+              priceChange: priceChange,
+              status: typeof tradeResult.status === 'string' ? tradeResult.status : 'completed',
+              completedAt: new Date(),
+              tradeId: combinedTradeId // Update with the combined trade ID
+            });
+            logMessage('INFO', `Updated parent trade record #${parentTradeId} with final amounts and status`, bot.name);
+          } else {
+            logMessage('WARNING', `Could not find parent trade with ID ${parentTradeId} to update`, bot.name);
+          }
+        } catch (updateError) {
+          logMessage('ERROR', `Failed to update parent trade: ${updateError.message}`, bot.name);
+          // Continue execution even if parent trade update fails
+        }
+      }
       
       logMessage('INFO', `Trade completed: ${chalk.yellow(fromCoin)} → ${chalk.yellow(toCoin)}`, bot.name);
       await LogEntry.log(db, 'TRADE', `Trade completed: ${fromCoin} → ${toCoin}`, bot.id);
@@ -708,7 +860,7 @@ class EnhancedSwapService {
         toCoin,
         amount: toAmount,
         priceChange,
-        status: tradeResult.status || 'completed'
+        status: typeof tradeResult.status === 'string' ? tradeResult.status : 'completed'
       };
     } catch (error) {
       logMessage('ERROR', `Trade execution error: ${error.message}`, bot.name);
