@@ -78,7 +78,21 @@ exports.getBotDeviations = async (req, res) => {
     Object.entries(groupedData).forEach(([pairKey, deviations]) => {
       if (deviations.length > 0) {
         const latest = deviations[deviations.length - 1];
+        
+        // Store deviation percent directly for backward compatibility
         latestDeviations[latest.baseCoin][latest.targetCoin] = latest.deviationPercent;
+        
+        // Create a prices object if it doesn't exist
+        if (!latestDeviations[latest.baseCoin].prices) {
+          latestDeviations[latest.baseCoin].prices = {};
+        }
+        
+        // Store price information
+        latestDeviations[latest.baseCoin].prices[latest.targetCoin] = {
+          basePrice: latest.basePrice,
+          targetPrice: latest.targetPrice,
+          timestamp: latest.timestamp
+        };
       }
     });
     
