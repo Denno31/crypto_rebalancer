@@ -118,10 +118,13 @@ class DeviationCalculatorService {
     
     // Calculate how much the target coin has moved from its initial snapshot price
     // Positive value means price went up, negative means price went down
-    const absolutePriceDiffPercent = ((targetPrice - targetInitialPrice) / targetInitialPrice) * 100;
+    // const absolutePriceDiffPercent = ((targetPrice - targetInitialPrice) / targetInitialPrice) * 100;
     
     // Keep original relative deviation for reference/logging
     const relativeDeviation = metrics.relativeDeviation;
+
+    // i think I will use relative deviation for now.
+    const absolutePriceDiffPercent = relativeDeviation;
     
     // Use absolute price difference as the primary score factor
     let score = absolutePriceDiffPercent;
