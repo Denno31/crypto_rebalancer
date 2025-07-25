@@ -10,5 +10,6 @@ const router = express.Router();
  * @access  Private
  */
 router.get('/available', authMiddleware.verifyToken, coinsController.getAvailableCoins);
+router.get('/accounts/:accountId', authMiddleware.verifyToken, coinsController.getAvailableCoinsAccountCoins);
 
 module.exports = router;

@@ -1,5 +1,8 @@
+const db = require('../models')
 const path = require('path');
 const fs = require('fs');
+const ApiConfig = db.apiConfig
+const ThreeCommasService = require('../services/threeCommas.service');
 
 /**
  * Controller for coin-related operations
@@ -35,6 +38,63 @@ exports.getAvailableCoins = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to retrieve available coins",
+      error: error.message
+    });
+  }
+};
+
+exports.getAvailableCoinsAccountCoins = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    
+    if (!accountId) {
+      return res.status(400).json({
+        message: "Account ID is required"
+      });
+    }
+    
+    console.log(`Getting available coins for account ${accountId}`);
+    
+    // Find 3commas API config for this user
+    const config = await ApiConfig.findOne({
+      where: {
+        name: '3commas',
+        userId: req.userId
+      }
+    });
+    
+    if (!config) {
+      return res.status(404).json({
+        message: "3Commas API configuration not found for this user"
+      });
+    }
+    
+    // Initialize 3commas client
+    const threeCommasClient = new ThreeCommasService(
+      config.apiKey,
+      config.apiSecret,
+      {
+        requestTimeout: 10000,
+        maxRetries: 1
+      }
+    );
+    
+    // Get available coins from 3commas
+    const [error, availableCoins] = await threeCommasClient.getAvailableCoins(accountId);
+    
+    if (error) {
+      console.log(`3commas API error: ${JSON.stringify(error)}`);
+      return res.status(500).json({
+        message: "Error from 3Commas API",
+        error
+      });
+    }
+    
+    return res.json(availableCoins);
+  } catch (error) {
+    console.error(`Error getting available coins: ${error.message}`);
+    return res.status(500).json({
+      message: "Error getting available coins",
       error: error.message
     });
   }
