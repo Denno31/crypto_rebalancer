@@ -14,7 +14,7 @@ const CoinUnitTracker = db.coinUnitTracker;
 const BotAsset = db.botAsset;
 const AssetLock = db.assetLock;
 
-/**
+/**git 
  * Format and print a log message with timestamp, level, and bot info
  * @param {String} level - Log level (INFO, WARNING, ERROR)
  * @param {String} message - Log message
@@ -47,6 +47,7 @@ class BotService {
    */
   constructor() {
     this.activeBots = {}; // Track active bot checking intervals
+    this.botIntervals = {}; // Track the configured interval for each bot
   }
 
   /**
@@ -95,8 +96,9 @@ class BotService {
         throw new Error('3Commas API config not found');
       }
       
-      // Set up checking interval
+      // Set up checking interval and store the current interval for change detection
       const interval = bot.checkInterval * 60 * 1000; // Convert minutes to ms
+      this.botIntervals[botId] = bot.checkInterval; // Store current interval for change detection
       
       this.activeBots[botId] = setInterval(async () => {
         try {
@@ -151,23 +153,85 @@ class BotService {
    */
   async checkBot(botId, systemConfig, apiConfig) {
     try {
-      logMessage('INFO', `Starting bot check with enhanced swap logic for bot ${botId}`);
+      logMessage('INFO', `Checking bot ${botId}`);
       
-      // Use the new enhanced swap service instead of the old implementation
-      const result = await enhancedSwapService.checkBot(botId, systemConfig, apiConfig);
+      // Check for interval changes before proceeding
+      await this.checkForIntervalChanges(botId);
       
-      // Log the result
-      if (result.success) {
-        logMessage('INFO', `Enhanced swap check successful: ${result.message}`, botId);
-      } else {
-        logMessage('WARNING', `Enhanced swap check unsuccessful: ${result.message}`, botId);
-      }
+      // Use the enhanced swap service
+      await enhancedSwapService.checkBot(botId, systemConfig, apiConfig);
       
-      return result.success;
+      // Update last check time
+      await Bot.update(
+        { lastCheckTime: new Date() },
+        { where: { id: botId } }
+      );
+      
+      logMessage('INFO', `Bot ${botId} checked successfully`);
     } catch (error) {
-      logMessage('ERROR', `Enhanced swap check failed: ${error.message}`, botId);
-      await LogEntry.log(db, 'ERROR', `Enhanced swap check failed: ${error.message}`, botId);
-      return false;
+      logMessage('ERROR', `Failed to check bot ${botId}: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Check if the bot's interval has changed and update the timer if needed
+   * @param {Number} botId - Bot ID to check for interval changes
+   * @private
+   */
+  async checkForIntervalChanges(botId) {
+    try {
+      // Only check if the bot is active
+      if (!this.activeBots[botId]) return;
+      
+      // Get fresh bot data from database
+      const bot = await Bot.findByPk(botId);
+      if (!bot) return; // Bot may have been deleted
+      
+      // Check if interval has changed
+      const storedInterval = this.botIntervals[botId];
+      const currentInterval = bot.checkInterval;
+      
+      if (storedInterval !== currentInterval) {
+        logMessage('INFO', `Bot ${botId} interval changed from ${storedInterval} to ${currentInterval} minutes, updating timer...`, bot.name);
+        await LogEntry.log(db, 'INFO', `Check interval changed from ${storedInterval} to ${currentInterval} minutes, updating timer`, botId);
+        
+        // Stop the old interval
+        clearInterval(this.activeBots[botId]);
+        
+        // Set up new interval with the updated value
+        const newInterval = currentInterval * 60 * 1000; // Convert minutes to ms
+        this.botIntervals[botId] = currentInterval; // Update stored interval
+        
+        // Create new timer with updated interval
+        this.activeBots[botId] = setInterval(async () => {
+          try {
+            // Get fresh configs for each check since they might change
+            const systemConfig = await SystemConfig.findOne({
+              where: { userId: bot.userId }
+            });
+            
+            const apiConfig = await ApiConfig.findOne({
+              where: {
+                name: '3commas',
+                userId: bot.userId
+              }
+            });
+            
+            if (systemConfig && apiConfig) {
+              await this.checkBot(bot.id, systemConfig, apiConfig);
+            }
+          } catch (error) {
+            logMessage('ERROR', `Bot check failed: ${error.message}`, bot.name);
+            await LogEntry.log(db, 'ERROR', `Bot check failed: ${error.message}`, botId);
+          }
+        }, newInterval);
+        
+        logMessage('INFO', `Bot ${botId} timer updated successfully, now checking every ${currentInterval} minutes`, bot.name);
+      }
+    } catch (error) {
+      logMessage('ERROR', `Failed to check for interval changes: ${error.message}`);
+      // Don't throw the error here to prevent disrupting the main check
     }
   }
 
