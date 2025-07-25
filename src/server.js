@@ -12,6 +12,7 @@ const configRoutes = require('./routes/config.routes');
 const accountRoutes = require('./routes/account.routes');
 const deviationRoutes = require('./routes/deviation.routes');
 const coinRoutes = require('./routes/coins.route');
+const tradeDecisionsRoutes = require('./routes/tradeDecisions.routes');
 
 // Import database
 const db = require('./models');
@@ -44,6 +45,7 @@ app.use('/api/config', configRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/deviations', deviationRoutes);
 app.use('/api/coins', coinRoutes);
+app.use('/api/trade-decisions', tradeDecisionsRoutes);
 
 // Start server without attempting to sync the database schema
 // We're connecting to an existing database, so we won't attempt to modify the schema

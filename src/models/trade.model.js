@@ -73,6 +73,18 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.DATE,
       defaultValue: Sequelize.NOW,
       field: 'executed_at'
+    },
+    decisionReason: {
+      type: Sequelize.TEXT,
+      allowNull: true,
+      field: 'decision_reason',
+      comment: 'Explanation for why this trade was executed'
+    },
+    deviationPercentage: {
+      type: Sequelize.DECIMAL(10, 2),
+      allowNull: true,
+      field: 'deviation_percentage',
+      comment: 'Percentage deviation that triggered the trade'
     }
   }, {
     tableName: 'trades',
