@@ -90,6 +90,7 @@ db.botAsset = require('./botAsset.model.js')(sequelize, Sequelize);
 db.coinDeviation = require('./coinDeviation.model.js')(sequelize, Sequelize);
 db.assetLock = require('./assetLock.model.js')(sequelize, Sequelize);
 db.tradeStep = require('./tradeStep.model.js')(sequelize, Sequelize);
+db.missedTrade = require('./missedTrade.model.js')(sequelize, Sequelize);
 
 // Define relationships
 db.user.hasMany(db.apiConfig, { foreignKey: 'userId' });
@@ -123,6 +124,10 @@ db.botAsset.belongsTo(db.bot, { foreignKey: 'botId' });
 // CoinDeviation relationships
 db.bot.hasMany(db.coinDeviation, { foreignKey: 'botId' });
 db.coinDeviation.belongsTo(db.bot, { foreignKey: 'botId' });
+
+// MissedTrade relationships
+db.bot.hasMany(db.missedTrade, { foreignKey: 'bot_id' });
+db.missedTrade.belongsTo(db.bot, { foreignKey: 'bot_id' });
 
 // Apply column mappings to match existing database schema
 const applyColumnMappings = require('../utils/column-mapping');

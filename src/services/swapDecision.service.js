@@ -175,18 +175,68 @@ class SwapDecisionService {
         };
       }
       
-      // All checks passed, recommend swap
-      await LogEntry.log(db, 'INFO', 
-        `Recommending swap to ${bestCandidate.coin} with score ${bestScore.toFixed(2)}`,
-        botId
-      );
-      
-      return {
-        shouldSwap: true,
-        bestCandidate,
-        candidates,
-        progressProtection: passesProgressProtection
-      };
+      // Decision: should we swap or not?
+      if (bestCandidate && bestCandidate.scoreDetails.rawScore > 0 && bestScore >= bot.thresholdPercentage) {
+        // Generate trade explanation
+        const tradeDeviation = bestCandidate.metrics.relativeDeviation || bestScore;
+        const decisionReason = `Trading ${currentCoin} for ${bestCandidate.coin} due to ${tradeDeviation.toFixed(2)}% deviation from target allocation`;
+        
+        // Additional context data for the decision
+        const additionalData = {
+          score: bestScore.toFixed(2),
+          threshold: bot.thresholdPercentage,
+          fromPrice: priceData[currentCoin]?.price,
+          toPrice: priceData[bestCandidate.coin]?.price,
+          relativeDifference: bestCandidate.metrics?.relativePriceDiffPercent
+        };
+        
+        console.log(`INFO [${bot.name}] Swap recommended: ${currentCoin} → ${bestCandidate.coin} (score: ${bestScore.toFixed(2)})`);
+        await LogEntry.log(db, 'INFO', 
+          `Swap recommended: ${currentCoin} → ${bestCandidate.coin} (score: ${bestScore.toFixed(2)}) - ${decisionReason}`, 
+          botId
+        );
+        
+        return { 
+          shouldSwap: true, 
+          fromCoin: currentCoin,
+          toCoin: bestCandidate.coin,
+          score: bestScore,
+          bestCandidate,
+          decisionReason,
+          deviationPercentage: tradeDeviation,
+          additionalData
+        };
+      } else {
+        const reason = !bestCandidate ? 'No viable candidates found' : 
+                      bestScore < bot.thresholdPercentage ? `Best score (${bestScore.toFixed(2)}) below threshold (${bot.thresholdPercentage})` : 
+                      'No candidate with positive score';
+        
+        // For missed opportunities tracking
+        if (bestCandidate && bestScore > 0) {
+          // This is a potential trade that didn't meet the threshold
+          const missedTradeService = require('./missedTrade.service');
+          await missedTradeService.recordMissedOpportunity(
+            botId,
+            currentCoin,
+            bestCandidate.coin,
+            bestCandidate.metrics?.deviation || bestScore,
+            'below_threshold',
+            { 
+              deviation: bestScore.toFixed(2), 
+              threshold: bot.thresholdPercentage 
+            }
+          );
+        }
+        
+        console.log(`INFO [${bot.name}] No swap recommended: ${reason}`);
+        await LogEntry.log(db, 'INFO', `No swap recommended: ${reason}`, botId);
+        
+        return { 
+          shouldSwap: false, 
+          reason,
+          bestCandidate
+        };
+      }
       
     } catch (error) {
       console.error(`Swap evaluation error: ${error.message}`);
