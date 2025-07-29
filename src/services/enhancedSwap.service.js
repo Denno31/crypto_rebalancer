@@ -721,9 +721,19 @@ class EnhancedSwapService {
       
       // Try to extract the actual executed amount from trade result
       // This is more accurate than estimation since it accounts for slippage and fees
-      let toAmount = tradeResult.amount; // First try the direct amount field
+      let toAmount;
+
+      // First check if the raw object exists in the trade result
+      if (tradeResult.raw) {
+        console.log('Found raw trade result data:', JSON.stringify(tradeResult.raw));
+        // Extract amount from direct raw data
+        if (tradeResult.raw.data && tradeResult.raw.data.entered_amount) {
+          toAmount = parseFloat(tradeResult.raw.data.entered_amount);
+          console.log(`Extracted toAmount from raw data entered_amount: ${toAmount}`);
+        }
+      }
       
-      // If no direct amount, check if we have data from trade completion monitoring
+      // If still no amount, check if we have data from trade completion monitoring
       if (!toAmount && tradeResult.completedTradeStatus) {
         // Try to extract from various possible response formats
         const rawData = tradeResult.completedTradeStatus.raw;
@@ -832,7 +842,7 @@ class EnhancedSwapService {
               priceChange: priceChange,
               status: typeof tradeResult.status === 'string' ? tradeResult.status : 'completed',
               completedAt: new Date(),
-              tradeId: combinedTradeId // Update with the combined trade ID
+              tradeId: combinedTradeId || tradeResult.tradeId // Update with the combined trade ID
             });
             logMessage('INFO', `Updated parent trade record #${parentTradeId} with final amounts and status`, bot.name);
           } else {
