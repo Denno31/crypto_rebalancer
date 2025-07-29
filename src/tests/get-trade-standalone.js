@@ -182,7 +182,7 @@ async function getTradeById(tradeId) {
 }
 
 // Get trade ID from command line arguments or use a default value
-const tradeId = process.argv[2] || '35152568'; // Replace with your trade ID if not provided
+const tradeId = process.argv[2] || '35260111'; // Replace with your trade ID if not provided
 
 const getMarketPairs = async ()=>{
   const [error, marketPairs] = await client.request('accounts', 'market_pairs', { market_code: 'binance_us' });
@@ -197,7 +197,7 @@ const getMarketPairs = async ()=>{
   return marketPairs;
 }
 
-getMarketPairs();
+// getMarketPairs();
 
 // Execute the function
 getTradeById(tradeId)

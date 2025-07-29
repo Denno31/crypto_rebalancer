@@ -901,6 +901,30 @@ class ThreeCommasService {
       //   console.warn(`Warning: Trade amount ${tradeAmount} ${fromCoin} is below minimum ${coinMinimum}. Adjusting to minimum.`);
       //   tradeAmount = coinMinimum;
       // }
+      if (fromCoin === preferredStablecoin){
+        positionType = "buy"
+        pair = `${fromCoin}_${toCoin}`;
+      }else{
+        positionType = 'sell';
+        pair = `${toCoin}_${fromCoin}`;
+      }
+
+      const [coinsError,availableCoins] = await this.getAvailableCoins(accountId);
+      if (coinsError) {
+        console.error('Error getting available coins:', coinsError);
+        return [coinsError, null];
+      }
+      const newToCoin = pair.split('_')[1];
+      const toCoinData = availableCoins.find(coin => coin.coin === newToCoin);
+      if (!toCoinData) {
+        console.error(`Error: ${newToCoin} not found in available coins`);
+        return [new Error(`Error: ${newToCoin} not found in available coins`), null];
+      }
+
+      const toCoinPriceInUsdtNew = toCoinData.amountInUsd / toCoinData.amount;
+      const newTradeAmount = tradeAmount / toCoinPriceInUsdtNew;
+      //check the order and determine the position type here
+      
       
       console.log(`Using trade amount: ${tradeAmount} ${fromCoin} (${positionType})`);
       
@@ -909,8 +933,8 @@ class ThreeCommasService {
         pair,
         position: {
           type: positionType,
-          units: { value: tradeAmount },
-          total: tradeAmount, // Total should match units for market orders
+          units: { value: newTradeAmount },
+          total: newTradeAmount, // Total should match units for market orders
           order_type: 'market'
         },
         take_profit: {
@@ -966,20 +990,23 @@ class ThreeCommasService {
           'Accept-Encoding': 'identity' // Add this header to match the Python client
         }
       })
-      console.log({response})
+     
       if (response.data.error) {
         console.error('Error executing trade:', response.data.error);
         return [response.data.error, null];
       }
       
+      // should I wait for trade completion here?
+     const [waitError, completedTradeStatus] = await this.waitForTradeCompletion(response.data.id);      
+
       return [null, {
         success: true,
-        tradeId: response.data.id,
-        status: response.data.status,
-        pair: response.data.pair,
-        createdAt: response.data.created_at,
+        tradeId: completedTradeStatus.tradeId,
+        status: completedTradeStatus.status,
+        pair: completedTradeStatus.pair,
+        createdAt: completedTradeStatus.createdAt,
         isIndirectTrade: isIndirectTrade,
-        raw: response.data
+        raw: completedTradeStatus.raw
       }];
     } catch (error) {
       console.error(`Error in executeTrade: ${error.message}`);
