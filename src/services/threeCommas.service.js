@@ -992,6 +992,95 @@ class ThreeCommasService {
       ];
     }
   }
+
+  // reusing execute trade for both indirect and direct trade causes problems
+  // so we will create a new function for direct trade
+  async executeDirectTrade(accountId, fromCoin, toCoin, amount, 
+    useTakeProfit = false, takeProfitPercentage = 2.0, 
+    mode = 'live', isIndirectTrade = false, forcedPositionType = null,
+    parentTradeId = null, db = null, enhancedSwapService = null,preferredStablecoin = 'USDT') {
+    try {
+      // write the core logic here dont reuse previous logic
+      console.log(`Executing direct trade: ${fromCoin} → ${toCoin}`)
+      let positionType = 'sell';
+      let pair = `${toCoin}_${fromCoin}`;
+      let tradeAmount = amount;
+      if(fromCoin === preferredStablecoin ){
+        positionType = "buy"
+        pair = `${fromCoin}_${toCoin}`
+        const [coinsError,availableCoins] = await this.getAvailableCoins(accountId)
+        if(coinsError){
+          return [coinsError,null]
+        }
+        const availableCoin = availableCoins.find(coin => coin.coin === toCoin)
+        if(!availableCoin){
+          return [new Error(`Coin ${toCoin} not found in available coins`),null]
+        }
+        const fromCoinUsdt = availableCoin.amountInUsd / availableCoin.amount
+        tradeAmount = amount / fromCoinUsdt
+      }
+
+      const payload = {
+        account_id: accountId,
+        pair,
+        position: {
+          type: positionType,
+          units: { value: tradeAmount },
+          total: tradeAmount, // Total should match units for market orders
+          order_type: 'market'
+        },
+        take_profit: {
+          enabled: false
+        },
+        stop_loss: {
+          enabled: false
+        },
+        instant: true,
+        // Always include the demo flag with explicit boolean value
+        demo: mode === 'paper'
+      };
+
+      const response = await axios.post(this.baseUrl + '/public/api/v2/smart_trades', payload, {
+        headers: {
+          'APIKEY': this.apiKey,
+          'Signature': this.__generateSignaturePython('/public/api/v2/smart_trades', JSON.stringify(payload)),
+          'Content-Type': 'application/json',
+          'Accept-Encoding': 'identity' // Add this header to match the Python client
+        }
+      });
+
+      if (response.data.error) {
+        console.error('Error executing trade:', response.data.error);
+        return [response.data.error, null];
+      }
+
+      const [waitError, completedTradeStatus] = await this.waitForTradeCompletion(response.data.id);
+      if(waitError){
+        return [waitError, null]
+      }
+
+      return [null, {
+        success: true,
+        tradeId: completedTradeStatus.tradeId,
+        status: completedTradeStatus.status,
+        pair: completedTradeStatus.pair,
+        createdAt: completedTradeStatus.createdAt,
+        isIndirectTrade: false,
+        raw: completedTradeStatus.raw
+      }];
+
+    } catch (error) {
+      console.error(`Error in executeDirectTrade: ${error.message}`);
+      return [
+        {
+          code: 500,
+          message: `Failed to execute direct trade: ${error.message}`
+        },
+        null
+      ];
+    }
+  }
+  
   
   /**
    * Wait for a trade to complete and return its final status
@@ -999,7 +1088,7 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, statusData]
    */
   async waitForTradeCompletion(tradeId) {
-    const maxAttempts = 15; // Increased from 10
+    const maxAttempts = 6; // Increased from 10
     const waitTime = 3000; // Check every 3 seconds
     
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
