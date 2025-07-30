@@ -599,6 +599,9 @@ class EnhancedSwapService {
       // Check if we're in development/testing mode
       const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
       const useSimulation = isDev || process.env.SIMULATE_TRADES === 'true';
+
+       // Determine if this is a direct trade (stablecoin is part of the pair)
+       const isDirectTrade = fromCoin === bot.preferredStablecoin || toCoin === bot.preferredStablecoin;
       
       let tradeResult;
       let tradeId;
@@ -669,21 +672,61 @@ class EnhancedSwapService {
 
         // Call 3Commas API to execute the trade with real-time calculated amount
         logMessage('INFO', `Executing trade with amount: ${tradeAmount} ${fromCoin}`, bot.name);
-        const [error, response] = await threeCommasClient.executeTrade(
-          bot.accountId,
+
+        // Prepare common parameters for trade execution
+        const tradeParams = {
+          accountId: bot.accountId,
           fromCoin,
           toCoin,
-          tradeAmount, // Use real-time calculated amount instead of stored fromAsset.amount
+          amount: tradeAmount,
           useTakeProfit,
           takeProfitPercentage,
-          undefined, // mode (default to 'live')
-          false, // isIndirectTrade (this isn't a multi-step trade step)
-          null, // forcedPositionType
-          parentTradeId, // Pass parent trade ID for step tracking
-          db, // Pass database connection
-          enhancedSwapService, // Pass service reference
-          bot.preferredStablecoin
+          mode: undefined, // default to 'live'
+          forcedPositionType: null,
+          parentTradeId,  // For step tracking
+          db,             // Database connection
+          enhancedSwapService, // Service reference
+          preferredStablecoin: bot.preferredStablecoin
+        };
+        
+       
+        
+        // Execute appropriate trade method based on direct vs. indirect
+        const [error, response] = await (isDirectTrade ? 
+          threeCommasClient.executeDirectTrade(
+            tradeParams.accountId,
+            tradeParams.fromCoin,
+            tradeParams.toCoin,
+            tradeParams.amount,
+            tradeParams.useTakeProfit,
+            tradeParams.takeProfitPercentage,
+            tradeParams.mode,
+            false, // isIndirectTrade (direct trade)
+            tradeParams.forcedPositionType,
+            tradeParams.parentTradeId,
+            tradeParams.db,
+            tradeParams.enhancedSwapService,
+            tradeParams.preferredStablecoin
+          ) : 
+          threeCommasClient.executeTrade(
+            tradeParams.accountId,
+            tradeParams.fromCoin,
+            tradeParams.toCoin,
+            tradeParams.amount,
+            tradeParams.useTakeProfit,
+            tradeParams.takeProfitPercentage,
+            tradeParams.mode,
+            false, // isIndirectTrade (this isn't a multi-step trade step)
+            tradeParams.forcedPositionType,
+            tradeParams.parentTradeId,
+            tradeParams.db,
+            tradeParams.enhancedSwapService,
+            tradeParams.preferredStablecoin
+          )
         );
+
+        
+        
         
         if (error || !response) {
           const errorMsg = error?.message || 'Unknown error executing trade with 3Commas API';
@@ -701,19 +744,19 @@ class EnhancedSwapService {
         await LogEntry.log(db, 'SUCCESS', `Trade ${tradeId} initiated with amount ${tradeAmount} ${fromCoin}`, bot.id);
         
         // Wait for trade to complete if we have a tradeId
-        if (tradeId) {
-          logMessage('INFO', `Waiting for trade ${tradeId} to complete...`, bot.name);
-          const [waitError, completedTradeStatus] = await threeCommasClient.waitForTradeCompletion(tradeId);
+        // if (tradeId) {
+        //   logMessage('INFO', `Waiting for trade ${tradeId} to complete...`, bot.name);
+        //   const [waitError, completedTradeStatus] = await threeCommasClient.waitForTradeCompletion(tradeId);
           
-          if (waitError) {
-            logMessage('WARNING', `Trade completion monitoring issue: ${waitError.message}`, bot.name);
-            await LogEntry.log(db, 'WARNING', `Trade completion monitoring issue: ${waitError.message}`, bot.id);
-            // Continue since the trade might still be processing
-          } else {
-            logMessage('INFO', `Trade ${tradeId} completed with status: ${completedTradeStatus.status}`, bot.name);
-            await LogEntry.log(db, 'INFO', `Trade ${tradeId} completed with status: ${completedTradeStatus.status}`, bot.id);
-          }
-        }
+        //   if (waitError) {
+        //     logMessage('WARNING', `Trade completion monitoring issue: ${waitError.message}`, bot.name);
+        //     await LogEntry.log(db, 'WARNING', `Trade completion monitoring issue: ${waitError.message}`, bot.id);
+        //     // Continue since the trade might still be processing
+        //   } else {
+        //     logMessage('INFO', `Trade ${tradeId} completed with status: ${completedTradeStatus.status}`, bot.name);
+        //     await LogEntry.log(db, 'INFO', `Trade ${tradeId} completed with status: ${completedTradeStatus.status}`, bot.id);
+        //   }
+        // }
       }
       
       // Calculate or use the amount received from completed trade data if available
@@ -724,16 +767,18 @@ class EnhancedSwapService {
       let toAmount = tradeResult.amount; // First try the direct amount field
       
       // If no direct amount, check if we have data from trade completion monitoring
-      if (!toAmount && tradeResult.completedTradeStatus) {
+      if (tradeResult.success) {
         // Try to extract from various possible response formats
-        const rawData = tradeResult.completedTradeStatus.raw;
+        const rawData = tradeResult.raw;
         
         if (rawData) {
           // Check different possible fields where the amount might be stored
-          toAmount = rawData.entered_amount || // Standard field
-                    rawData.to_amount || // Alternative field
-                    (rawData.position && rawData.position.units) || // Position units
-                    (rawData.position && rawData.position.quantity); // Position quantity
+          toAmount = rawData.data.entered_amount || // Standard field
+                    rawData.data.to_amount || // Alternative field
+                    (rawData.data.position && rawData.data.position.units) || // Position units
+                    (rawData.data.position && rawData.data.position.quantity); // Position quantity
+
+              toAmount = Number(toAmount)
         }
       }
       
@@ -832,7 +877,7 @@ class EnhancedSwapService {
               priceChange: priceChange,
               status: typeof tradeResult.status === 'string' ? tradeResult.status : 'completed',
               completedAt: new Date(),
-              tradeId: combinedTradeId // Update with the combined trade ID
+              tradeId: !isDirectTrade ? combinedTradeId : tradeResult.tradeId// Update with the combined trade ID
             });
             logMessage('INFO', `Updated parent trade record #${parentTradeId} with final amounts and status`, bot.name);
           } else {
