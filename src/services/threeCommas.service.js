@@ -340,7 +340,7 @@ class ThreeCommasService {
         
         // If we get a valid response with price data
         if (response.data && response.data.last) {
-          console.log(`Found price via accounts/currency_rates: ${JSON.stringify(response.data)}`);
+          // console.log(`Found price via accounts/currency_rates: ${JSON.stringify(response.data)}`);
           return [null, response.data];
         }
       } catch (err) {
@@ -1231,6 +1231,89 @@ class ThreeCommasService {
     }
   }
   
+  /**
+   * Sell a coin directly to a stablecoin
+   * @param {String|Number} accountId - The 3Commas account ID
+   * @param {String} fromCoin - Coin to sell
+   * @param {String} targetStablecoin - Target stablecoin (USDC/USDT)
+   * @param {Number} amount - Amount of fromCoin to sell (use null for max available)
+   * @param {String} mode - Trading mode (live or paper)
+   * @param {Number|String} [botId] - Bot ID for recording the trade
+   * @param {Object} [db] - Database connection for recording trade
+   * @returns {Promise<Array>} - [error, response]
+   */
+  async sellToStablecoin(accountId, fromCoin, targetStablecoin, amount, mode = 'live', botId = null, db = null) {
+    try {
+      console.log(`Selling ${amount} ${fromCoin} to ${targetStablecoin}`);
+      
+      // If amount is null or 'max', get the maximum available amount
+      if (amount === null || amount === 'max') {
+        const [coinsError, availableCoins] = await this.getAvailableCoins(accountId);
+        
+        if (coinsError) {
+          return [coinsError, null];
+        }
+        
+        const coinData = availableCoins.find(c => c.coin === fromCoin);
+        if (!coinData) {
+          return [{ message: `Coin ${fromCoin} not found in account` }, null];
+        }
+        
+        amount = coinData.amount;
+        console.log(`Using maximum available amount: ${amount} ${fromCoin}`);
+      }
+      
+      // Execute the trade directly to the stablecoin
+      const [tradeError, tradeResponse] = await this.executeDirectTrade(
+        accountId, 
+        fromCoin, 
+        targetStablecoin, 
+        amount,
+        false, // useTakeProfit
+        2.0,   // takeProfitPercentage (not used)
+        mode,  // mode
+        false, // isIndirectTrade
+        null,  // forcedPositionType (will be determined by the method)
+        null,  // parentTradeId
+        db,    // db
+        null,  // enhancedSwapService
+        targetStablecoin // preferredStablecoin
+      );
+      
+      if (tradeError) {
+        console.error(`Error executing sell to stablecoin: ${JSON.stringify(tradeError)}`);
+        return [tradeError, null];
+      }
+      
+      // If we have a botId, update the bot's current coin to the stablecoin
+      if (botId && db) {
+        try {
+          const bot = await db.bot.findByPk(botId);
+          if (bot) {
+            await bot.update({ currentCoin: targetStablecoin });
+            console.log(`Updated bot ${botId} current coin to ${targetStablecoin}`);
+            
+            // Create a log entry for the manual sell
+            await db.logEntry.create({
+              botId: botId,
+              level: 'TRADE',
+              message: `Manual sell: ${fromCoin} → ${targetStablecoin} (${amount} ${fromCoin})`,
+              timestamp: new Date()
+            });
+          }
+        } catch (dbError) {
+          console.error(`Error updating bot state: ${dbError.message}`);
+          // Continue with the trade response even if DB update fails
+        }
+      }
+      
+      return [null, tradeResponse];
+    } catch (error) {
+      console.error(`Error in sellToStablecoin: ${error.message}`);
+      return [{ message: error.message }, null];
+    }
+  }
+
   /**
    * Get actual commission rates from the exchange via 3Commas
    * @param {String|Number} accountId - The 3Commas account ID
