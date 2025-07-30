@@ -665,32 +665,16 @@ class ThreeCommasService {
         // First, we need to convert the USDT amount to the equivalent amount in the target coin
         // Get available coins to check current prices
         console.log(`Fetching available coins to get current prices for conversion...`);
-        const [coinsError, availableCoins] = await this.getAvailableCoins(accountId);
-        
-        if (coinsError) {
-          console.error(`Failed to get available coins for conversion: ${coinsError.message}`);
-          return [coinsError, null];
+       
+        const [priceError,priceData] = await this.getMarketPrice(`${toCoin}_${intermediateCoin}`);
+
+        if(priceError){
+          return [priceError,null]
         }
+       
+        const toCoinPriceInUSDT = parseFloat(priceData.last);
         
-        // Find the target coin data to get its price in USDT
-        const toCoinData = availableCoins.find(c => c.coin === toCoin);
-        if (!toCoinData) {
-          console.error(`Could not find price data for ${toCoin} in available coins`);
-          return [{ message: `Could not find price data for ${toCoin}` }, null];
-        }
-        
-        // Calculate the price per unit of the target coin
-        // Available coins provides amount and amountInUsd, so we calculate price = amountInUsd / amount
-        if (!toCoinData.amount || !toCoinData.amountInUsd || toCoinData.amount <= 0) {
-          console.error(`Missing required data for ${toCoin}: amount=${toCoinData.amount}, amountInUsd=${toCoinData.amountInUsd}`);
-          console.log('Full coin data:', JSON.stringify(toCoinData));
-          return [{ message: `Missing price data for ${toCoin}` }, null];
-        }
-        
-        // Calculate price per unit
-        const toCoinPriceInUSDT = toCoinData.amountInUsd / toCoinData.amount;
-        
-        console.log(`${toCoin} price calculation: ${toCoinData.amountInUsd} USD / ${toCoinData.amount} ${toCoin} = ${toCoinPriceInUSDT} USD per ${toCoin}`);
+        console.log(`${toCoin} price calculation: ${toCoinPriceInUSDT} USD per ${toCoin}`);
         
         if (!toCoinPriceInUSDT || toCoinPriceInUSDT <= 0) {
           console.error(`Invalid calculated price for ${toCoin}: ${toCoinPriceInUSDT}`);
@@ -1008,16 +992,22 @@ class ThreeCommasService {
       if(fromCoin === preferredStablecoin ){
         positionType = "buy"
         pair = `${fromCoin}_${toCoin}`
-        const [coinsError,availableCoins] = await this.getAvailableCoins(accountId)
-        if(coinsError){
-          return [coinsError,null]
+        
+        // Get price directly using getMarketPrice instead of available coins
+        const [priceError, priceData] = await this.getMarketPrice(`${toCoin}_${fromCoin}`);
+        if(priceError){
+          return [new Error(`Failed to get price for ${pair}: ${priceError.message}`), null];
         }
-        const availableCoin = availableCoins.find(coin => coin.coin === toCoin)
-        if(!availableCoin){
-          return [new Error(`Coin ${toCoin} not found in available coins`),null]
+        
+        if(!priceData || !priceData.last){
+          return [new Error(`No price data available for ${pair}`), null];
         }
-        const fromCoinUsdt = availableCoin.amountInUsd / availableCoin.amount
-        tradeAmount = amount / fromCoinUsdt
+        
+        // Calculate trade amount based on price
+        const coinPrice = parseFloat(priceData.last);
+        tradeAmount = amount / coinPrice;
+        
+        console.log(`Using direct price calculation: ${amount} ${fromCoin} / ${coinPrice} = ${tradeAmount} ${toCoin}`);
       }
 
       const payload = {
