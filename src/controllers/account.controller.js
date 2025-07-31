@@ -104,7 +104,9 @@ exports.getAvailableCoins = async (req, res) => {
     
     // Get available coins from 3commas
     const [error, availableCoins] = await threeCommasClient.getAvailableCoins(accountId);
-    
+    const account = await threeCommasClient.getAccountInfo(accountId);
+    console.log({availableCoins, account:account[1]});
+ 
     if (error) {
       console.log(`3commas API error: ${JSON.stringify(error)}`);
       return res.status(500).json({
@@ -113,7 +115,7 @@ exports.getAvailableCoins = async (req, res) => {
       });
     }
     
-    return res.json(availableCoins);
+    return res.json({availableCoins, account:account[1]});
   } catch (error) {
     console.error(`Error getting available coins: ${error.message}`);
     return res.status(500).json({

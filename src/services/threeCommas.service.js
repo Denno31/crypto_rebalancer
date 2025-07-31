@@ -325,6 +325,12 @@ class ThreeCommasService {
       const [baseCoin, quoteCoin] = pair.split('_');
       console.log(`Fetching market price for ${baseCoin}_${quoteCoin}`);
       
+      // Special case: If baseCoin and quoteCoin are the same, return price of 1
+      if (baseCoin === quoteCoin) {
+        console.log(`Base coin and quote coin are the same (${baseCoin}). Returning price of 1.`);
+        return [null, { last: 1, bid: 1, ask: 1 }];
+      }
+      
       // 1. Try using the verified working endpoint format
       try {
         // Use the known working endpoint as demonstrated by the user
@@ -686,7 +692,7 @@ class ThreeCommasService {
         const targetCoinUnits = secondStepAmount / toCoinPriceInUSDT;
         
         // Apply a small safety margin (0.5%) to account for price fluctuations
-        const safetyMargin = 0.995;
+        const safetyMargin = 0.999;
         const adjustedTargetCoinUnits = targetCoinUnits * safetyMargin;
         
         console.log(`Converting ${secondStepAmount} ${intermediateCoin} to approximately ${adjustedTargetCoinUnits} ${toCoin} units`);

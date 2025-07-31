@@ -81,6 +81,9 @@ exports.getAvailableCoinsAccountCoins = async (req, res) => {
     
     // Get available coins from 3commas
     const [error, availableCoins] = await threeCommasClient.getAvailableCoins(accountId);
+    // get the current account here
+    const account = await threeCommasClient.getAccount(accountId);
+    console.log({account})
     
     if (error) {
       console.log(`3commas API error: ${JSON.stringify(error)}`);

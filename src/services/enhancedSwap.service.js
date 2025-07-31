@@ -611,7 +611,8 @@ class EnhancedSwapService {
         logMessage('INFO', `SIMULATION MODE: Simulating trade without calling 3Commas API`, bot.name);
         await LogEntry.log(db, 'TRADE', `SIMULATION MODE: Simulating trade without calling 3Commas API`, bot.id);
         
-        const netValueUSDT = fromValueUSDT - commissionAmount;
+        // const netValueUSDT = fromValueUSDT - commissionAmount;
+        const netValueUSDT = fromValueUSDT;
         const toAmount = netValueUSDT / toPrice;
         
         tradeResult = {
