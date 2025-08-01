@@ -5,6 +5,7 @@ const PriceHistory = db.priceHistory;
 const Trade = db.trade;
 const LogEntry = db.logEntry;
 const ApiConfig = db.apiConfig;
+const BotSwapDecision = db.botSwapDecision;
 const { Op } = require('sequelize');
 const ThreeCommasService = require('../services/threeCommas.service');
 const priceService = require('../services/price.service');
