@@ -157,6 +157,22 @@ exports.getBotById = async (req, res) => {
     // Add trades array to the response
     botResponse.trades = bot.trades || [];
     
+    // Get account information from 3Commas
+    try {
+      const threeCommasClient = await threeCommasClientService(req);
+      const [error, accountInfo] = await threeCommasClient.getAccountInfo(bot.accountId);
+      
+      if (!error && accountInfo) {
+        // Add account information to the response
+        botResponse.accountInfo = accountInfo;
+      } else if (error) {
+        console.error('Error getting account info:', error);
+      }
+    } catch (accountError) {
+      console.error('Error with 3Commas client:', accountError);
+      // Don't fail the whole request if we can't get account info
+    }
+    
     return res.json(botResponse);
   } catch (error) {
     console.error('Error getting bot:', error);
