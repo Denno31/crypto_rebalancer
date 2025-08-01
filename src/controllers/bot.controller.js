@@ -9,6 +9,15 @@ const { Op } = require('sequelize');
 const ThreeCommasService = require('../services/threeCommas.service');
 const priceService = require('../services/price.service');
 
+const threeCommasClientService = async (req) =>{
+  const apiConfig = await ApiConfig.findOne({ where: { userId: req.userId,name:'3commas' } });
+  if(!apiConfig){
+    throw new Error('No API config found for user');
+  }
+  const threeCommasService = new ThreeCommasService(apiConfig.apiKey,apiConfig.apiSecret);
+  return threeCommasService;
+}
+
 // Helper functions
 const botToResponse = (bot, currentAsset = null) => {
   const coinsArray = bot.getCoinsArray();
@@ -52,6 +61,8 @@ const botToResponse = (bot, currentAsset = null) => {
     currentCoinValue: currentAsset ? currentAsset.usdtEquivalent : null,
     currentCoinEntryPrice: currentAsset ? currentAsset.entryPrice : null,
     botAssets: bot.botAssets,
+    exchangeName:bot.exchangeName,
+    exchangeIcon:bot.exchangeIcon,
     // Add trade statistics
     tradeStats: {
       totalTrades,
@@ -80,11 +91,23 @@ exports.getAllBots = async (req, res) => {
         }
       ]
     });
+
+    // I wanna attach the account that the bot belongs to
+    const client = await threeCommasClientService(req)
+    const [error,accounts] = await client.getAccounts()
+   
+if(error){
+  throw error
+}    
     
     // Map to response format with trades included
     return res.json(bots.map(bot => {
       const botResponse = botToResponse(bot);
-  
+      const account = accounts.find(account => account.id == bot.accountId)
+      if(account){
+        botResponse.exchangeName = account.exchange_name
+        botResponse.exchangeIcon = account.market_icon
+      }
       // Add trades to the response
       botResponse.trades = bot.trades || [];
       return botResponse;
