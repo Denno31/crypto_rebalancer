@@ -82,7 +82,7 @@ exports.getAvailableCoinsAccountCoins = async (req, res) => {
     // Get available coins from 3commas
     const [error, availableCoins] = await threeCommasClient.getAvailableCoins(accountId);
     // get the current account here
-    const account = await threeCommasClient.getAccount(accountId);
+    const account = await threeCommasClient.getAccountInfo(accountId);
     console.log({account})
     
     if (error) {
