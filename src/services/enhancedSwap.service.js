@@ -16,6 +16,7 @@ const BotAsset = db.botAsset;
 const Trade = db.trade;
 const CoinSnapshot = db.coinSnapshot;
 const TradeStep = db.tradeStep;
+const BotSwapDecision = db.botSwapDecision;
 
 /**
  * Format and print a log message with timestamp, level, and bot info
@@ -207,6 +208,28 @@ class EnhancedSwapService {
         if (tradeResult.success) {
           logMessage('INFO', `Trade executed successfully: ${bot.currentCoin} → ${targetCoin}`, bot.name);
           await LogEntry.log(db, 'TRADE', `Trade executed successfully: ${bot.currentCoin} → ${targetCoin}`, botId);
+          
+          // Update the most recent swap decision to link it to this trade
+          try {
+            const recentSwapDecision = await BotSwapDecision.findOne({
+              where: {
+                botId: bot.id,
+                fromCoin: bot.currentCoin,
+                toCoin: targetCoin,
+                swapPerformed: true
+              },
+              order: [['createdAt', 'DESC']]
+            });
+            
+            if (recentSwapDecision) {
+              await recentSwapDecision.update({
+                tradeId: parentTrade.id
+              });
+              logMessage('INFO', `Linked swap decision ${recentSwapDecision.id} to trade ${parentTrade.id}`, bot.name);
+            }
+          } catch (error) {
+            logMessage('WARNING', `Could not link swap decision to trade: ${error.message}`, bot.name);
+          }
           
           return { 
             success: true, 
