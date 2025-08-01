@@ -105,13 +105,13 @@ db.systemConfig.belongsTo(db.user, { foreignKey: 'userId' });
 db.bot.hasMany(db.priceHistory, { foreignKey: 'botId' });
 db.priceHistory.belongsTo(db.bot, { foreignKey: 'botId' });
 
-db.bot.hasMany(db.trade, { foreignKey: 'botId', as: 'trades' });
+db.bot.hasMany(db.trade, { foreignKey: 'botId' });
 db.trade.belongsTo(db.bot, { foreignKey: 'botId' });
 
-db.bot.hasMany(db.logEntry, { foreignKey: 'botId', as: 'logs' });
+db.bot.hasMany(db.logEntry, { foreignKey: 'botId' });
 db.logEntry.belongsTo(db.bot, { foreignKey: 'botId' });
 
-db.bot.hasMany(db.botSwapDecision, { foreignKey: 'botId', as: 'swapDecisions' });
+db.bot.hasMany(db.botSwapDecision, { foreignKey: 'botId' });
 db.botSwapDecision.belongsTo(db.bot, { foreignKey: 'botId' });
 
 db.trade.hasMany(db.botSwapDecision, { foreignKey: 'tradeId' });

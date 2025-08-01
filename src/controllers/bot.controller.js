@@ -595,6 +595,55 @@ exports.getTradeDecisionLogs = async (req, res) => {
 };
 
 // Get real-time asset data for a bot
+// Get swap decisions for a bot
+exports.getBotSwapDecisions = async (req, res) => {
+  const botId = req.params.botId;
+  console.log(botId)
+  if (!botId) {
+    return res.status(400).send({ message: 'Bot ID is required' });
+  }
+  
+  const limit = parseInt(req.query.limit) || 100;
+  const offset = parseInt(req.query.offset) || 0;
+  const swapPerformed = req.query.swapPerformed === 'true' ? true : 
+                       (req.query.swapPerformed === 'false' ? false : null);
+  
+  try {
+    // Find bot to verify ownership
+    const bot = await Bot.findOne({
+      where: { id: botId, userId: req.userId }
+    });
+    
+    if (!bot) {
+      return res.status(404).send({ message: 'Bot not found' });
+    }
+    
+    // Build query conditions
+    const whereCondition = { botId };
+    if (swapPerformed !== null) {
+      whereCondition.swapPerformed = swapPerformed;
+    }
+    
+    // Get swap decisions with pagination
+    const swapDecisions = await BotSwapDecision.findAndCountAll({
+      where: whereCondition,
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+    
+    res.status(200).send({
+      total: swapDecisions.count,
+      offset,
+      limit,
+      items: swapDecisions.rows
+    });
+  } catch (err) {
+    console.error('Error getting bot swap decisions:', err);
+    res.status(500).send({ message: err.message || 'Error retrieving bot swap decisions' });
+  }
+};
+
 exports.getBotAssets = async (req, res) => {
   try {
     const botId = req.params.botId;

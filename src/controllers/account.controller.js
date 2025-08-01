@@ -6,7 +6,7 @@ const ThreeCommasService = require('../services/threeCommas.service');
 // Get user's trading accounts
 exports.getAccounts = async (req, res) => {
   try {
-    console.log(`User ID: ${req.userId}`);
+  
     
     // Find 3commas API config for this user
     const config = await ApiConfig.findOne({
@@ -22,8 +22,7 @@ exports.getAccounts = async (req, res) => {
       });
     }
     
-    // Initialize 3commas client
-    console.log(`Found config: api_key=${config.apiKey.substring(0, 8)}..., mode=${config.mode}`);
+   
     const p3cw = new ThreeCommasService(
       config.apiKey,
       config.apiSecret,
@@ -33,8 +32,7 @@ exports.getAccounts = async (req, res) => {
       }
     );
     
-    // Request account data from 3commas
-    console.log("Making request to 3commas API...");
+  
     const [error, accounts] = await p3cw.getAccounts();
     
     // console.log(`Error: ${JSON.stringify(error)}`);
@@ -105,7 +103,7 @@ exports.getAvailableCoins = async (req, res) => {
     // Get available coins from 3commas
     const [error, availableCoins] = await threeCommasClient.getAvailableCoins(accountId);
     const account = await threeCommasClient.getAccountInfo(accountId);
-    console.log({availableCoins, account:account[1]});
+    
  
     if (error) {
       console.log(`3commas API error: ${JSON.stringify(error)}`);
