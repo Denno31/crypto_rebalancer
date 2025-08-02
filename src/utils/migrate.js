@@ -415,18 +415,28 @@ const migrations = [
   {
     id: '008_create_asset_locks_table',
     description: 'Create asset_locks table for managing asset ownership in shared wallets',
-    up: async (queryInterface) => {
+    up: async (queryInterface, Sequelize) => {
       console.log('Creating asset_locks table...');
+      
       try {
+        // Check if table exists first
+        const tableExists = await queryInterface.showAllTables()
+          .then(tables => tables.includes('asset_locks'));
+        
+        if (tableExists) {
+          console.log('asset_locks table already exists, skipping creation');
+          return;
+        }
+        
+        // Create the asset_locks table
         await queryInterface.createTable('asset_locks', {
           id: {
-            type: DataTypes.INTEGER,
+            type: Sequelize.INTEGER,
             primaryKey: true,
             autoIncrement: true
           },
           bot_id: {
-            type: DataTypes.INTEGER,
-            allowNull: false,
+            type: Sequelize.INTEGER,
             references: {
               model: 'bots',
               key: 'id'
@@ -434,56 +444,119 @@ const migrations = [
             onDelete: 'CASCADE'
           },
           coin: {
-            type: DataTypes.STRING,
+            type: Sequelize.STRING,
             allowNull: false
           },
           amount: {
-            type: DataTypes.FLOAT,
-            allowNull: false,
-            defaultValue: 0.0
-          },
-          status: {
-            type: DataTypes.STRING,
-            allowNull: false,
-            defaultValue: 'locked' // locked, released
-          },
-          reason: {
-            type: DataTypes.STRING,
-            allowNull: true
-          },
-          expires_at: {
-            type: DataTypes.DATE,
+            type: Sequelize.DECIMAL(20, 8),
             allowNull: false
           },
+          locked_at: {
+            type: Sequelize.DATE,
+            defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+          },
+          released_at: {
+            type: Sequelize.DATE,
+            allowNull: true
+          },
+          status: {
+            type: Sequelize.STRING,
+            defaultValue: 'locked'
+          },
           created_at: {
-            type: DataTypes.DATE,
-            allowNull: false,
-            defaultValue: Sequelize.fn('NOW')
+            type: Sequelize.DATE,
+            defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
           },
           updated_at: {
-            type: DataTypes.DATE,
-            allowNull: false,
-            defaultValue: Sequelize.fn('NOW')
+            type: Sequelize.DATE,
+            defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
           }
         });
         
-        // Create indexes for faster lookups
-        await queryInterface.addIndex('asset_locks', ['bot_id', 'coin']);
-        await queryInterface.addIndex('asset_locks', ['status', 'expires_at']);
-        
-        console.log('asset_locks table created successfully');
+        console.log('Created asset_locks table successfully');
       } catch (error) {
         console.error('Error creating asset_locks table:', error);
         throw error;
       }
     },
     down: async (queryInterface) => {
-      console.log('Dropping asset_locks table...');
+      console.log('Rolling back asset_locks table creation...');
       try {
         await queryInterface.dropTable('asset_locks');
-        console.log('asset_locks table dropped successfully');
+        console.log('Dropped asset_locks table');
       } catch (error) {
         console.error('Error dropping asset_locks table:', error);
+        throw error;
+      }
+    }
+  },
+  {
+    id: '009_create_bot_reset_events',
+    description: 'Create bot_reset_events table for tracking bot reset operations',
+    up: async (queryInterface) => {
+      console.log('Creating bot_reset_events table...');
+      
+      try {
+        // Check if table exists first
+        const tableExists = await queryInterface.showAllTables()
+          .then(tables => tables.includes('bot_reset_events'));
+        
+        if (tableExists) {
+          console.log('bot_reset_events table already exists, skipping creation');
+          return;
+        }
+        
+        // Create the bot_reset_events table
+        await queryInterface.createTable('bot_reset_events', {
+          id: {
+            type: DataTypes.INTEGER,
+            primaryKey: true,
+            autoIncrement: true
+          },
+          bot_id: {
+            type: DataTypes.INTEGER,
+            references: {
+              model: 'bots',
+              key: 'id'
+            },
+            onDelete: 'CASCADE'
+          },
+          reset_type: {
+            type: DataTypes.STRING
+          },
+          previous_coin: {
+            type: DataTypes.STRING
+          },
+          previous_global_peak: {
+            type: DataTypes.DECIMAL(20, 8),
+            allowNull: true
+          },
+          timestamp: {
+            type: DataTypes.DATE
+          },
+          created_at: {
+            type: DataTypes.DATE,
+            defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+          },
+          updated_at: {
+            type: DataTypes.DATE,
+            defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+          }
+        });
+        
+        console.log('Created bot_reset_events table successfully');
+      } catch (error) {
+        console.error('Error creating bot_reset_events table:', error);
+        throw error;
+      }
+    },
+    down: async (queryInterface) => {
+      console.log('Rolling back bot_reset_events table creation...');
+      try {
+        await queryInterface.dropTable('bot_reset_events');
+        console.log('Dropped bot_reset_events table');
+      } catch (error) {
+        console.error('Error dropping bot_reset_events table:', error);
         throw error;
       }
     }

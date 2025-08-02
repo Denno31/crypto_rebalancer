@@ -21,5 +21,6 @@ router.get('/:botId/logs', botController.getBotLogs);
 router.get('/:botId/trade-decision-logs', botController.getTradeDecisionLogs); // New endpoint for filtered trade decision logs
 router.get('/:botId/assets', botController.getBotAssets);
 router.get('/:botId/swap-decisions', botController.getBotSwapDecisions); // Endpoint for swap decisions tracking
+router.post('/:botId/reset', botController.resetBot); // Endpoint for resetting a bot
 
 module.exports = router;
