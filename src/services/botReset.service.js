@@ -149,6 +149,19 @@ class BotResetService {
       
       logMessage('INFO', `Selling all assets to ${bot.preferredStablecoin} for bot ${bot.id} (${bot.name})`, bot.name);
       
+      // Get the bot's current asset from the database
+      const botAsset = await db.botAsset.findOne({
+        where: { botId: bot.id, coin: currentCoin }
+      });
+      
+      if (!botAsset) {
+        logMessage('ERROR', `No asset record found for bot ${bot.id} and coin ${currentCoin}`, bot.name);
+        throw new Error(`No asset record found for bot ${bot.id} and coin ${currentCoin}`);
+      }
+      
+      const coinAmount = botAsset.amount;
+      logMessage('INFO', `Using bot's tracked amount: ${coinAmount} ${currentCoin}`, bot.name);
+      
       // Get 3Commas account info
       const apiConfig = await db.apiConfig.findOne({ where: { userId: bot.userId } });
       if (!apiConfig) {
@@ -158,20 +171,21 @@ class BotResetService {
       // Initialize 3Commas service
       const threeCommasService = new ThreeCommasService(apiConfig.apiKey, apiConfig.apiSecret);
       
-      // Execute sell to stablecoin (using max amount)
-      // This would use the existing sellToStablecoin method if available
-      // or fall back to a direct trade execution
+      // Execute sell to stablecoin with the exact amount from bot asset
       await threeCommasService.sellToStablecoin(
         bot.accountId,
         currentCoin,
         targetStablecoin,
-        'all' // Sell all available amount
+        coinAmount, // Use the actual coin amount from the database
+        'live',
+        bot.id,
+        db
       );
       
       // Update bot's current coin
       await bot.update({ currentCoin: targetStablecoin });
       
-      logMessage('INFO', `Successfully sold assets to ${bot.preferredStablecoin}`, bot.name);
+      logMessage('INFO', `Successfully sold ${coinAmount} ${currentCoin} to ${targetStablecoin}`, bot.name);
     } catch (error) {
       logMessage('ERROR', `Error selling to stablecoin for bot ${bot.id}: ${error.message}`);
       throw error;
