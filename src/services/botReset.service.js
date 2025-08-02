@@ -4,6 +4,7 @@ const db = require('../models');
 const Bot = db.bot;
 const BotResetEvent = db.botResetEvent;
 const ThreeCommasService = require('./threeCommas.service');
+const botService = require('./bot.service'); // Import the singleton instance directly
 const chalk = require('chalk');
 
 /**
@@ -56,6 +57,15 @@ class BotResetService {
       }
       
       logMessage('INFO', `Resetting bot ${botId} (${bot.name}), type: ${resetType}, sellToStablecoin: ${sellToStablecoin}`, bot.name);
+      
+      // Stop the bot if it's running to prevent race conditions
+      logMessage('INFO', `Stopping bot ${botId} before reset`, bot.name);
+      const wasStopped = await botService.stopBot(botId);
+      if (wasStopped) {
+        logMessage('INFO', `Bot ${botId} was successfully stopped before reset`, bot.name);
+      } else {
+        logMessage('INFO', `Bot ${botId} was not running, proceeding with reset`, bot.name);
+      }
       
       // Optional: Sell to stablecoin if requested
       if (sellToStablecoin) {

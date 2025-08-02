@@ -199,52 +199,48 @@ const getBotById = async (req, res) => {
 const createBot = async (req, res) => {
   try {
     // Extract bot data from request
-    const {
-      name,
-      coins,
-      thresholdPercentage,
-      checkInterval,
-      initialCoin,
-      accountId,
-      tradingStrategy,
-      exchangeName,
-      pricingSource,
-      fallbackPricingSource,
-      preferredStablecoin,
-      protectionEnabled,
-      protectionThreshold,
-      protectionCooldownMinutes
+ 
+    const { 
+      name, 
+      enabled, 
+      coins, 
+      threshold_percentage, 
+      check_interval, 
+      initial_coin, 
+      account_id,
+      price_source,
+      allocation_percentage,
+      manual_budget_amount,
+      preferred_stablecoin
     } = req.body;
     
+    
     // Validate required fields
-    if (!name || !coins || !thresholdPercentage || !checkInterval || !initialCoin || !accountId) {
+    
+    if (!name || !coins || !threshold_percentage || !check_interval || !initial_coin || !account_id) {
       return res.status(400).json({
         message: "Missing required fields"
       });
     }
     
     // Create bot
-    const bot = await Bot.create({
+    const newBot = await Bot.create({
       name,
-      coins: Array.isArray(coins) ? JSON.stringify(coins) : coins,
-      thresholdPercentage,
-      checkInterval,
-      initialCoin,
-      currentCoin: initialCoin,
-      accountId,
-      userId: req.userId,
-      enabled: true,
-      tradingStrategy,
-      exchangeName,
-      pricingSource: pricingSource || '3commas',
-      fallbackPricingSource: fallbackPricingSource || 'coingecko',
-      preferredStablecoin: preferredStablecoin || 'USDT',
-      protectionEnabled: protectionEnabled || false,
-      protectionThreshold: protectionThreshold || 10,
-      protectionCooldownMinutes: protectionCooldownMinutes || 1440
+      enabled: enabled !== false, // Default to true if not specified
+      coins: Array.isArray(coins) ? coins.join(',') : coins, // Handle both array and comma-separated string
+      thresholdPercentage: parseFloat(threshold_percentage) || 0,
+      checkInterval: parseInt(check_interval) || 0,
+      initialCoin: initial_coin,
+      accountId: account_id,
+      priceSource: price_source,
+      // Handle empty strings for numeric fields by converting to null
+      allocationPercentage: allocation_percentage === '' ? null : parseFloat(allocation_percentage),
+      manualBudgetAmount: manual_budget_amount === '' ? null : parseFloat(manual_budget_amount),
+      preferredStablecoin: preferred_stablecoin || 'USDT',
+      userId: req.userId
     });
     
-    return res.status(201).json(botToResponse(bot));
+    return res.status(201).json(botToResponse(newBot));
   } catch (error) {
     console.error('Error creating bot:', error);
     return res.status(500).json({
@@ -257,13 +253,14 @@ const createBot = async (req, res) => {
 // Update bot by ID
 const updateBot = async (req, res) => {
   try {
+
     const botId = req.params.botId;
     
     // Find bot and ensure it belongs to the user
     const bot = await Bot.findOne({
       where: {
         id: botId,
-        userId: req.userId
+        userId: req.userId 
       }
     });
     
@@ -273,49 +270,45 @@ const updateBot = async (req, res) => {
       });
     }
     
-    // Extract updatable fields
-    const {
-      name,
-      coins,
-      thresholdPercentage,
-      checkInterval,
-      initialCoin,
-      accountId,
-      tradingStrategy,
-      exchangeName,
-      pricingSource,
-      fallbackPricingSource,
-      preferredStablecoin,
-      protectionEnabled,
-      protectionThreshold,
-      protectionCooldownMinutes
-    } = req.body;
+    // Update fields from request body
+    const updateData = { ...req.body };
     
-    // Prepare update object
-    const updates = {};
+    // Handle coins field specially if it's an array
+    if (updateData.coins && Array.isArray(updateData.coins)) {
+      updateData.coins = updateData.coins.join(',');
+    }
     
-    if (name !== undefined) updates.name = name;
-    if (coins !== undefined) updates.coins = Array.isArray(coins) ? JSON.stringify(coins) : coins;
-    if (thresholdPercentage !== undefined) updates.thresholdPercentage = thresholdPercentage;
-    if (checkInterval !== undefined) updates.checkInterval = checkInterval;
-    if (initialCoin !== undefined) updates.initialCoin = initialCoin;
-    if (accountId !== undefined) updates.accountId = accountId;
-    if (tradingStrategy !== undefined) updates.tradingStrategy = tradingStrategy;
-    if (exchangeName !== undefined) updates.exchangeName = exchangeName;
-    if (pricingSource !== undefined) updates.pricingSource = pricingSource;
-    if (fallbackPricingSource !== undefined) updates.fallbackPricingSource = fallbackPricingSource;
-    if (preferredStablecoin !== undefined) updates.preferredStablecoin = preferredStablecoin;
-    if (protectionEnabled !== undefined) updates.protectionEnabled = protectionEnabled;
-    if (protectionThreshold !== undefined) updates.protectionThreshold = protectionThreshold;
-    if (protectionCooldownMinutes !== undefined) updates.protectionCooldownMinutes = protectionCooldownMinutes;
+    // Handle numeric fields to prevent PostgreSQL type errors
+    if (updateData.threshold_percentage !== undefined) {
+      updateData.thresholdPercentage = updateData.threshold_percentage === '' ? null : parseFloat(updateData.threshold_percentage);
+      delete updateData.threshold_percentage;
+    }
     
-    // Update bot
-    await bot.update(updates);
+    if (updateData.check_interval !== undefined) {
+      updateData.checkInterval = updateData.check_interval === '' ? null : parseInt(updateData.check_interval);
+      delete updateData.check_interval;
+    }
     
-    // Get updated bot
-    const updatedBot = await Bot.findByPk(botId);
+    if (updateData.allocation_percentage !== undefined) {
+      updateData.allocationPercentage = updateData.allocation_percentage === '' ? null : parseFloat(updateData.allocation_percentage);
+      delete updateData.allocation_percentage;
+    }
     
-    return res.json(botToResponse(updatedBot));
+    if (updateData.manual_budget_amount !== undefined) {
+      updateData.manualBudgetAmount = updateData.manual_budget_amount === '' ? null : parseFloat(updateData.manual_budget_amount);
+      delete updateData.manual_budget_amount;
+    }
+    
+    // Ensure stablecoin has a default
+    if (updateData.preferred_stablecoin !== undefined) {
+      updateData.preferredStablecoin = updateData.preferred_stablecoin || 'USDT';
+      delete updateData.preferred_stablecoin;
+    }
+    
+    // Update the bot
+    await bot.update(updateData);
+    
+    return res.json(botToResponse(bot));
   } catch (error) {
     console.error('Error updating bot:', error);
     return res.status(500).json({
