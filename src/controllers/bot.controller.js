@@ -91,6 +91,11 @@ const getAllBots = async (req, res) => {
       where: { userId: req.userId },
       include: [
         {
+          model: BotAsset,
+          required: false,
+          attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
+        },
+        {
           model: Trade,
           as: 'trades', // Use the correct alias here
           attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
@@ -100,8 +105,44 @@ const getAllBots = async (req, res) => {
       ]
     });
     
-    // Map to response format
-    const botsResponse = bots.map(bot => botToResponse(bot));
+    // Try to get exchange info from 3Commas
+    let accounts = [];
+    try {
+      const client = await threeCommasClientService(req);
+      const [error, accountsData] = await client.getAccounts();
+      if (!error) {
+        accounts = accountsData;
+      }
+    } catch (apiError) {
+      console.error('Error getting 3Commas accounts:', apiError);
+      // Don't fail the whole request if we can't get account info
+    }
+    
+    // Map to response format with current asset data
+    const botsResponse = bots.map(bot => {
+      // Find the current asset for this bot if available
+      let currentAsset = null;
+      if (bot.botAssets && bot.botAssets.length > 0) {
+        currentAsset = bot.botAssets.find(asset => asset.coin === bot.currentCoin);
+      }
+      
+      const botResponse = botToResponse(bot, currentAsset);
+      
+      // Add exchange info if available
+      const account = accounts.find(account => account.id == bot.accountId);
+      if (account) {
+        botResponse.exchangeName = account.exchange_name;
+        botResponse.exchangeIcon = account.market_icon;
+      }
+      
+      // Add trades to the response
+      botResponse.trades = bot.trades || [];
+      
+      // For frontend compatibility, also include botAssets
+      botResponse.botAssets = bot.botAssets || [];
+      
+      return botResponse;
+    });
     
     return res.json(botsResponse);
   } catch (error) {
