@@ -79,9 +79,27 @@ class BotResetService {
         targetCoin = bot.initialCoin || bot.preferredStablecoin || 'USDT';
       }
       
+      // Delete all associated coin snapshots
+      logMessage('INFO', `Deleting coin snapshots for bot ${botId}`, bot.name);
+      await db.coinSnapshot.destroy({
+        where: { botId }
+      });
+      
+      // Delete all associated coin unit trackers
+      logMessage('INFO', `Deleting coin unit trackers for bot ${botId}`, bot.name);
+      await db.coinUnitTracker.destroy({
+        where: { botId }
+      });
+      
+      // Delete all associated bot assets
+      logMessage('INFO', `Deleting bot assets for bot ${botId}`, bot.name);
+      await db.botAsset.destroy({
+        where: { botId }
+      });
+      
       // Reset bot state
       const updates = {
-        currentCoin: targetCoin,
+        currentCoin: null, // Set to null so bot initialization logic can create new snapshots
         globalPeakValue: null, // Will be set on next evaluation
         lastEvaluationTime: null,
         lastTradeTime: null,
@@ -92,6 +110,7 @@ class BotResetService {
         errorCount: 0
       };
       
+      logMessage('INFO', `Updating bot state for bot ${botId}`, bot.name);
       await bot.update(updates);
       
       // Return the updated bot
