@@ -208,7 +208,7 @@ class SwapDecisionService {
           unitGainPercent: bestCandidate.metrics.unitGainPercent || 0,
           ethEquivalentValue: bestCandidate.metrics.ethEquivalentValue || 0,
           minEthEquivalent: bestCandidate.metrics.minEthEquivalent || 0,
-          globalPeakValue: bot.globalPeakValueInETH || 0,
+          globalPeakValue: bot.globalPeakValue || 0,
           globalProtectionTriggered: true,
           swapPerformed: false,
           reason: passesProgressProtection.reason
@@ -244,7 +244,7 @@ class SwapDecisionService {
         unitGainPercent: bestCandidate.metrics.unitGainPercent || 0,
         ethEquivalentValue: bestCandidate.metrics.ethEquivalentValue || 0,
         minEthEquivalent: bestCandidate.metrics.minEthEquivalent || 0,
-        globalPeakValue: bot.globalPeakValueInETH || 0,
+        globalPeakValue: bot.globalPeakValue || 0,
         globalProtectionTriggered: !passesProgressProtection.allowed,
         swapPerformed: true,
         reason: 'Swap recommended: meets threshold criteria'
