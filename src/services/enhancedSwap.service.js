@@ -364,6 +364,9 @@ class EnhancedSwapService {
         const currentBot = await Bot.findByPk(bot.id);
         const globalPeakValue = currentBot.manualBudgetAmount || (initializedAsset.amount * initializedAsset.entryPrice);
         currentBot.globalPeakValue = globalPeakValue;
+        if (!currentBot.manualBudgetAmount) {
+          currentBot.manualBudgetAmount = globalPeakValue;
+        }
         await currentBot.save();
         
         await LogEntry.log(
