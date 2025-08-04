@@ -10,6 +10,7 @@ router.use(authMiddleware.verifyToken);
 // Bot routes
 router.get('/', botController.getAllBots);
 router.post('/', botController.createBot);
+router.get('/price/:coin', botController.getRealTimePrice); // Endpoint for real-time price fetching (must be before /:botId routes)
 router.get('/:botId', botController.getBotById);
 router.put('/:botId', botController.updateBot);
 router.delete('/:botId', botController.deleteBot);
