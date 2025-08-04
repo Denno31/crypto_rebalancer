@@ -69,6 +69,7 @@ const botToResponse = (bot, currentAsset = null) => {
     errorState: bot.errorState,
     errorCount: bot.errorCount || 0,
     takeProfitPercentage: bot.takeProfitPercentage,
+    manualBudgetAmount: bot.manualBudgetAmount,
     // Add trade stats
     tradeStats: {
       totalTrades,
