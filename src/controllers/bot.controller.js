@@ -906,6 +906,49 @@ const resetBot = async (req, res) => {
   }
 };
 
+// Get real-time price for a coin
+async function getRealTimePrice(req, res) {
+  try {
+    const { coin } = req.params;
+    const baseCoin = req.query.baseCoin || 'USDT';
+    
+    if (!coin) {
+      return res.status(400).json({ error: 'Coin parameter is required' });
+    }
+    
+    // Get system config (for price source preference)
+    const systemConfig = await db.systemConfig.findOne();
+    if (!systemConfig) {
+      return res.status(500).json({ error: 'System configuration not found' });
+    }
+    
+    // Get API config for user (3Commas credentials)
+    const apiConfig = await ApiConfig.findOne({ 
+      where: { userId: req.userId, name: '3commas' } 
+    });
+    
+    // Get real-time price using the price service
+    const priceData = await priceService.getPrice(
+      systemConfig, 
+      apiConfig, 
+      coin, 
+      baseCoin
+    );
+    
+    // Return price and source information
+    return res.json({
+      coin,
+      baseCoin,
+      price: priceData.price,
+      source: priceData.source,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error(`Error fetching real-time price: ${error.message}`);
+    return res.status(500).json({ error: 'Failed to fetch real-time price' });
+  }
+}
+
 module.exports = {
   getAllBots,
   getBotById,
@@ -920,5 +963,6 @@ module.exports = {
   getTradeDecisionLogs,
   getBotSwapDecisions,
   getBotAssets,
-  resetBot
+  resetBot,
+  getRealTimePrice
 };
