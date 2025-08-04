@@ -238,12 +238,12 @@ class EnhancedSwapService {
             evaluation: swapEvaluation
           };
         } else {
-          logMessage('ERROR', `Trade failed: ${tradeResult.error}`, bot.name);
-          await LogEntry.log(db, 'ERROR', `Trade failed: ${tradeResult.error}`, botId);
+          logMessage('ERROR', `Trade failed: ${JSON.stringify(tradeResult.error)}`, bot.name);
+          await LogEntry.log(db, 'ERROR', `Trade failed: ${JSON.stringify(tradeResult.error)}`, botId);
           
           return { 
             success: false, 
-            message: `Trade failed: ${tradeResult.error}`,
+            message: `Trade failed: ${JSON.stringify(tradeResult.error)}`,
             trade: tradeResult,
             evaluation: swapEvaluation
           };

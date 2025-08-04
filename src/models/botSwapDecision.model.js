@@ -90,6 +90,11 @@ module.exports = (sequelize, Sequelize) => {
       allowNull: true,
       field: 'global_peak_value'
     },
+    currentGlobalPeakValue: {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      field: 'current_global_peak_value'
+    },
     globalProtectionTriggered: {
       type: Sequelize.BOOLEAN,
       allowNull: false,

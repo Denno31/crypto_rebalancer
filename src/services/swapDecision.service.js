@@ -169,7 +169,7 @@ class SwapDecisionService {
             unitGainPercent: topCandidate.metrics.unitGainPercent || 0,
             ethEquivalentValue: topCandidate.metrics.ethEquivalentValue || 0,
             minEthEquivalent: topCandidate.metrics.minEthEquivalent || 0,
-            globalPeakValue: bot.globalPeakValueInETH || 0,
+            globalPeakValue: bot.globalPeakValue || 0,
             globalProtectionTriggered: false,
             swapPerformed: false,
             reason: 'No candidates meet threshold criteria'
@@ -208,7 +208,8 @@ class SwapDecisionService {
           unitGainPercent: bestCandidate.metrics.unitGainPercent || 0,
           ethEquivalentValue: bestCandidate.metrics.ethEquivalentValue || 0,
           minEthEquivalent: bestCandidate.metrics.minEthEquivalent || 0,
-          globalPeakValue: bot.globalPeakValueInETH || 0,
+          globalPeakValue: bot.globalPeakValue || 0,
+          currentGlobalPeakValue: passesProgressProtection.netValue || null, // Store the netValue calculation
           globalProtectionTriggered: true,
           swapPerformed: false,
           reason: passesProgressProtection.reason
@@ -244,7 +245,8 @@ class SwapDecisionService {
         unitGainPercent: bestCandidate.metrics.unitGainPercent || 0,
         ethEquivalentValue: bestCandidate.metrics.ethEquivalentValue || 0,
         minEthEquivalent: bestCandidate.metrics.minEthEquivalent || 0,
-        globalPeakValue: bot.globalPeakValueInETH || 0,
+        globalPeakValue: bot.globalPeakValue || 0,
+        currentGlobalPeakValue: passesProgressProtection.netValue || null, // Store the netValue calculation
         globalProtectionTriggered: !passesProgressProtection.allowed,
         swapPerformed: true,
         reason: 'Swap recommended: meets threshold criteria'
@@ -310,14 +312,16 @@ class SwapDecisionService {
             reason: `Swap would reduce value below ${100 - threshold}% of peak.`,
             netValue: netValue.toFixed(2),
             minAcceptable: minAcceptableValue.toFixed(2),
-            peakValue: bot.globalPeakValue.toFixed(2)
+            peakValue: bot.globalPeakValue.toFixed(2),
+            netValue: netValue.toFixed(2)
           };
         }
       }
       await LogEntry.log(db, 'INFO', `Global protection passed for ${bot.name}`, bot.id);
       // ✅ Global protection passed
       return {
-        allowed: true
+        allowed: true,
+        netValue: netValue.toFixed(2)
       };
     } catch (error) {
       console.error(`Global protection check error: ${error.message}`);

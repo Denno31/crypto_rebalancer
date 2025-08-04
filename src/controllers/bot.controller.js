@@ -717,7 +717,11 @@ const getBotSwapDecisions = async (req, res) => {
       where: whereCondition,
       order: [['createdAt', 'DESC']],
       limit,
-      offset
+      offset,
+      // Explicitly include the currentGlobalPeakValue field
+      attributes: {
+        include: ['currentGlobalPeakValue']
+      }
     });
     
     res.status(200).send({
