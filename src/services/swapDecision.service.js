@@ -12,6 +12,7 @@ const Bot = db.bot;
 const CoinSnapshot = db.coinSnapshot;
 const CoinUnitTracker = db.coinUnitTracker;
 const LogEntry = db.logEntry;
+const BotSwapDecision = db.botSwapDecision;
 const deviationCalculator = require('./deviationCalculator.service');
 const snapshotManager = require('./snapshotManager.service');
 
@@ -149,6 +150,32 @@ class SwapDecisionService {
       // No viable candidates found
       if (!bestCandidate) {
         await LogEntry.log(db, 'INFO', 'No swap candidates meet the criteria', botId);
+        
+        // Record the no-swap decision in the database
+        if (candidates.length > 0) {
+          // Use the highest scoring candidate even though it didn't meet threshold
+          const topCandidate = candidates[0];
+          await this.recordSwapDecision({
+            botId: bot.id,
+            fromCoin: currentCoin,
+            toCoin: topCandidate.coin,
+            fromCoinPrice: priceData[currentCoin].price,
+            toCoinPrice: topCandidate.price,
+            fromCoinSnapshot: initialPrices[currentCoin] || 0,
+            toCoinSnapshot: initialPrices[topCandidate.coin] || 0,
+            priceDeviationPercent: topCandidate.metrics.relativeDeviation,
+            priceThreshold: bot.thresholdPercentage,
+            deviationTriggered: false,
+            unitGainPercent: topCandidate.metrics.unitGainPercent || 0,
+            ethEquivalentValue: topCandidate.metrics.ethEquivalentValue || 0,
+            minEthEquivalent: topCandidate.metrics.minEthEquivalent || 0,
+            globalPeakValue: bot.globalPeakValueInETH || 0,
+            globalProtectionTriggered: false,
+            swapPerformed: false,
+            reason: 'No candidates meet threshold criteria'
+          });
+        }
+        
         return {
           shouldSwap: false,
           reason: 'No candidates meet threshold criteria',
@@ -166,6 +193,27 @@ class SwapDecisionService {
           botId
         );
         
+        // Record the prevented swap decision in the database
+        await this.recordSwapDecision({
+          botId: bot.id,
+          fromCoin: currentCoin,
+          toCoin: bestCandidate.coin,
+          fromCoinPrice: priceData[currentCoin].price,
+          toCoinPrice: bestCandidate.price,
+          fromCoinSnapshot: initialPrices[currentCoin] || 0,
+          toCoinSnapshot: initialPrices[bestCandidate.coin] || 0,
+          priceDeviationPercent: bestCandidate.metrics.relativeDeviation,
+          priceThreshold: bot.thresholdPercentage,
+          deviationTriggered: bestCandidate.scoreDetails.meetsThreshold,
+          unitGainPercent: bestCandidate.metrics.unitGainPercent || 0,
+          ethEquivalentValue: bestCandidate.metrics.ethEquivalentValue || 0,
+          minEthEquivalent: bestCandidate.metrics.minEthEquivalent || 0,
+          globalPeakValue: bot.globalPeakValueInETH || 0,
+          globalProtectionTriggered: true,
+          swapPerformed: false,
+          reason: passesProgressProtection.reason
+        });
+        
         return {
           shouldSwap: false,
           reason: passesProgressProtection.reason,
@@ -180,6 +228,27 @@ class SwapDecisionService {
         `Recommending swap to ${bestCandidate.coin} with score ${bestScore.toFixed(2)}`,
         botId
       );
+      
+      // Record the swap decision in the database
+      await this.recordSwapDecision({
+        botId: bot.id,
+        fromCoin: currentCoin,
+        toCoin: bestCandidate.coin,
+        fromCoinPrice: priceData[currentCoin].price,
+        toCoinPrice: bestCandidate.price,
+        fromCoinSnapshot: initialPrices[currentCoin] || 0,
+        toCoinSnapshot: initialPrices[bestCandidate.coin] || 0,
+        priceDeviationPercent: bestCandidate.metrics.relativeDeviation,
+        priceThreshold: bot.thresholdPercentage,
+        deviationTriggered: bestCandidate.scoreDetails.meetsThreshold,
+        unitGainPercent: bestCandidate.metrics.unitGainPercent || 0,
+        ethEquivalentValue: bestCandidate.metrics.ethEquivalentValue || 0,
+        minEthEquivalent: bestCandidate.metrics.minEthEquivalent || 0,
+        globalPeakValue: bot.globalPeakValueInETH || 0,
+        globalProtectionTriggered: !passesProgressProtection.allowed,
+        swapPerformed: true,
+        reason: 'Swap recommended: meets threshold criteria'
+      });
       
       return {
         shouldSwap: true,
@@ -208,6 +277,78 @@ class SwapDecisionService {
    * @param {Object} candidate - Swap candidate from evaluateSwapCandidates
    * @returns {Promise<Object>} - Result with allowed flag and reason
    */
+  async checkGlobalProgressProtection(bot, candidate) {
+    try {
+      const botId = bot.id;
+      const currentCoin = bot.currentCoin;
+      const commissionRate = bot.commissionRate || 0.002; // 0.2% default
+      const threshold = bot.globalThresholdPercentage || 10; // Default: 10% buffer
+  
+      // 1. Get current asset info
+      const currentAsset = await db.botAsset.findOne({
+        where: { botId, coin: currentCoin }
+      });
+  
+      if (!currentAsset) {
+        return {
+          allowed: false,
+          reason: `Missing asset data for current coin ${currentCoin}`
+        };
+      }
+  
+      // 2. Calculate net value in USDT after commission
+      const currentPrice = candidate.metrics.currentPrice;
+      const currentValue = currentAsset.amount * currentPrice;
+      const netValue = currentValue * (1 - commissionRate);
+  
+      // 3. Compare with global peak (in USDT)
+      if (bot.globalPeakValue && bot.globalPeakValue > 0) {
+        const minAcceptableValue = bot.globalPeakValue * (1 - threshold / 100);
+        if (netValue < minAcceptableValue) {
+          return {
+            allowed: false,
+            reason: `Swap would reduce value below ${100 - threshold}% of peak.`,
+            netValue: netValue.toFixed(2),
+            minAcceptable: minAcceptableValue.toFixed(2),
+            peakValue: bot.globalPeakValue.toFixed(2)
+          };
+        }
+      }
+      await LogEntry.log(db, 'INFO', `Global protection passed for ${bot.name}`, bot.id);
+      // ✅ Global protection passed
+      return {
+        allowed: true
+      };
+    } catch (error) {
+      console.error(`Global protection check error: ${error.message}`);
+      await LogEntry.log(db, 'ERROR', `Global protection check error: ${error.message}`, bot.id);
+      
+      // Default to allowed in case of error
+      return {
+        allowed: true,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Record a swap decision in the database
+   * @param {Object} decisionData - Data about the swap decision
+   * @returns {Promise<Object>} - Created swap decision record
+   */
+  async recordSwapDecision(decisionData) {
+    try {
+      // Create the swap decision record
+      const swapDecision = await BotSwapDecision.create(decisionData);
+      console.log(`Recorded swap decision ID ${swapDecision.id} for bot ${decisionData.botId}: ${decisionData.fromCoin} → ${decisionData.toCoin}, performed: ${decisionData.swapPerformed}`);
+      return swapDecision;
+    } catch (error) {
+      console.error(`Error recording swap decision: ${error.message}`);
+      // Don't throw the error, just log it and continue
+      return null;
+    }
+  }
+
   async checkGlobalProgressProtection(bot, candidate) {
     try {
       const botId = bot.id;

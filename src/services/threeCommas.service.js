@@ -1015,7 +1015,7 @@ class ThreeCommasService {
         
         console.log(`Using direct price calculation: ${amount} ${fromCoin} / ${coinPrice} = ${tradeAmount} ${toCoin}`);
       }
-
+      console.log({pair, positionType, tradeAmount})
       const payload = {
         account_id: accountId,
         pair,
@@ -1044,7 +1044,7 @@ class ThreeCommasService {
           'Accept-Encoding': 'identity' // Add this header to match the Python client
         }
       });
-
+      console.log({response})
       if (response.data.error) {
         console.error('Error executing trade:', response.data.error);
         return [response.data.error, null];
@@ -1276,6 +1276,8 @@ class ThreeCommasService {
         targetStablecoin // preferredStablecoin
       );
       
+      console.log({tradeResponse})
+
       if (tradeError) {
         console.error(`Error executing sell to stablecoin: ${JSON.stringify(tradeError)}`);
         return [tradeError, null];

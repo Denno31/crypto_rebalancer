@@ -90,6 +90,8 @@ db.botAsset = require('./botAsset.model.js')(sequelize, Sequelize);
 db.coinDeviation = require('./coinDeviation.model.js')(sequelize, Sequelize);
 db.assetLock = require('./assetLock.model.js')(sequelize, Sequelize);
 db.tradeStep = require('./tradeStep.model.js')(sequelize, Sequelize);
+db.botSwapDecision = require('./botSwapDecision.model.js')(sequelize, Sequelize);
+db.botResetEvent = require('./botResetEvent.model.js')(sequelize, Sequelize);
 
 // Define relationships
 db.user.hasMany(db.apiConfig, { foreignKey: 'userId' });
@@ -109,6 +111,16 @@ db.trade.belongsTo(db.bot, { foreignKey: 'botId' });
 
 db.bot.hasMany(db.logEntry, { foreignKey: 'botId' });
 db.logEntry.belongsTo(db.bot, { foreignKey: 'botId' });
+
+db.bot.hasMany(db.botSwapDecision, { foreignKey: 'botId' });
+db.botSwapDecision.belongsTo(db.bot, { foreignKey: 'botId' });
+
+db.trade.hasMany(db.botSwapDecision, { foreignKey: 'tradeId' });
+db.botSwapDecision.belongsTo(db.trade, { foreignKey: 'tradeId' });
+
+// BotResetEvent relationships
+db.bot.hasMany(db.botResetEvent, { foreignKey: 'botId' });
+db.botResetEvent.belongsTo(db.bot, { foreignKey: 'botId' });
 
 db.bot.hasMany(db.coinUnitTracker, { foreignKey: 'botId' });
 db.coinUnitTracker.belongsTo(db.bot, { foreignKey: 'botId' });

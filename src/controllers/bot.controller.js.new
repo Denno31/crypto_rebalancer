@@ -91,11 +91,6 @@ const getAllBots = async (req, res) => {
       where: { userId: req.userId },
       include: [
         {
-          model: BotAsset,
-          required: false,
-          attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
-        },
-        {
           model: Trade,
           as: 'trades', // Use the correct alias here
           attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
@@ -105,44 +100,8 @@ const getAllBots = async (req, res) => {
       ]
     });
     
-    // Try to get exchange info from 3Commas
-    let accounts = [];
-    try {
-      const client = await threeCommasClientService(req);
-      const [error, accountsData] = await client.getAccounts();
-      if (!error) {
-        accounts = accountsData;
-      }
-    } catch (apiError) {
-      console.error('Error getting 3Commas accounts:', apiError);
-      // Don't fail the whole request if we can't get account info
-    }
-    
-    // Map to response format with current asset data
-    const botsResponse = bots.map(bot => {
-      // Find the current asset for this bot if available
-      let currentAsset = null;
-      if (bot.botAssets && bot.botAssets.length > 0) {
-        currentAsset = bot.botAssets.find(asset => asset.coin === bot.currentCoin);
-      }
-      
-      const botResponse = botToResponse(bot, currentAsset);
-      
-      // Add exchange info if available
-      const account = accounts.find(account => account.id == bot.accountId);
-      if (account) {
-        botResponse.exchangeName = account.exchange_name;
-        botResponse.exchangeIcon = account.market_icon;
-      }
-      
-      // Add trades to the response
-      botResponse.trades = bot.trades || [];
-      
-      // For frontend compatibility, also include botAssets
-      botResponse.botAssets = bot.botAssets || [];
-      
-      return botResponse;
-    });
+    // Map to response format
+    const botsResponse = bots.map(bot => botToResponse(bot));
     
     return res.json(botsResponse);
   } catch (error) {
@@ -240,48 +199,52 @@ const getBotById = async (req, res) => {
 const createBot = async (req, res) => {
   try {
     // Extract bot data from request
- 
-    const { 
-      name, 
-      enabled, 
-      coins, 
-      threshold_percentage, 
-      check_interval, 
-      initial_coin, 
-      account_id,
-      price_source,
-      allocation_percentage,
-      manual_budget_amount,
-      preferred_stablecoin
+    const {
+      name,
+      coins,
+      thresholdPercentage,
+      checkInterval,
+      initialCoin,
+      accountId,
+      tradingStrategy,
+      exchangeName,
+      pricingSource,
+      fallbackPricingSource,
+      preferredStablecoin,
+      protectionEnabled,
+      protectionThreshold,
+      protectionCooldownMinutes
     } = req.body;
     
-    
     // Validate required fields
-    
-    if (!name || !coins || !threshold_percentage || !check_interval || !initial_coin || !account_id) {
+    if (!name || !coins || !thresholdPercentage || !checkInterval || !initialCoin || !accountId) {
       return res.status(400).json({
         message: "Missing required fields"
       });
     }
     
     // Create bot
-    const newBot = await Bot.create({
+    const bot = await Bot.create({
       name,
-      enabled: enabled !== false, // Default to true if not specified
-      coins: Array.isArray(coins) ? coins.join(',') : coins, // Handle both array and comma-separated string
-      thresholdPercentage: parseFloat(threshold_percentage) || 0,
-      checkInterval: parseInt(check_interval) || 0,
-      initialCoin: initial_coin,
-      accountId: account_id,
-      priceSource: price_source,
-      // Handle empty strings for numeric fields by converting to null
-      allocationPercentage: allocation_percentage === '' ? null : parseFloat(allocation_percentage),
-      manualBudgetAmount: manual_budget_amount === '' ? null : parseFloat(manual_budget_amount),
-      preferredStablecoin: preferred_stablecoin || 'USDT',
-      userId: req.userId
+      coins: Array.isArray(coins) ? JSON.stringify(coins) : coins,
+      thresholdPercentage,
+      checkInterval,
+      initialCoin,
+      currentCoin: initialCoin,
+      accountId,
+      userId: req.userId,
+      enabled: true,
+      tradingStrategy,
+      exchangeName,
+      pricingSource: pricingSource || '3commas',
+      fallbackPricingSource: fallbackPricingSource || 'coingecko',
+      preferredStablecoin: preferredStablecoin || 'USDT',
+      protectionEnabled: protectionEnabled || false,
+      protectionThreshold: protectionThreshold || 10,
+      protectionCooldownMinutes: protectionCooldownMinutes || 1440
     });
     
-    return res.status(201).json(botToResponse(newBot));
+    return res.status(201).json(botToResponse(bot));
   } catch (error) {
     console.error('Error creating bot:', error);
     return res.status(500).json({
@@ -294,14 +257,13 @@ const createBot = async (req, res) => {
 // Update bot by ID
 const updateBot = async (req, res) => {
   try {
-
     const botId = req.params.botId;
     
     // Find bot and ensure it belongs to the user
     const bot = await Bot.findOne({
       where: {
         id: botId,
-        userId: req.userId 
+        userId: req.userId
       }
     });
     
@@ -311,45 +273,49 @@ const updateBot = async (req, res) => {
       });
     }
     
-    // Update fields from request body
-    const updateData = { ...req.body };
+    // Extract updatable fields
+    const {
+      name,
+      coins,
+      thresholdPercentage,
+      checkInterval,
+      initialCoin,
+      accountId,
+      tradingStrategy,
+      exchangeName,
+      pricingSource,
+      fallbackPricingSource,
+      preferredStablecoin,
+      protectionEnabled,
+      protectionThreshold,
+      protectionCooldownMinutes
+    } = req.body;
     
-    // Handle coins field specially if it's an array
-    if (updateData.coins && Array.isArray(updateData.coins)) {
-      updateData.coins = updateData.coins.join(',');
-    }
+    // Prepare update object
+    const updates = {};
     
-    // Handle numeric fields to prevent PostgreSQL type errors
-    if (updateData.threshold_percentage !== undefined) {
-      updateData.thresholdPercentage = updateData.threshold_percentage === '' ? null : parseFloat(updateData.threshold_percentage);
-      delete updateData.threshold_percentage;
-    }
+    if (name !== undefined) updates.name = name;
+    if (coins !== undefined) updates.coins = Array.isArray(coins) ? JSON.stringify(coins) : coins;
+    if (thresholdPercentage !== undefined) updates.thresholdPercentage = thresholdPercentage;
+    if (checkInterval !== undefined) updates.checkInterval = checkInterval;
+    if (initialCoin !== undefined) updates.initialCoin = initialCoin;
+    if (accountId !== undefined) updates.accountId = accountId;
+    if (tradingStrategy !== undefined) updates.tradingStrategy = tradingStrategy;
+    if (exchangeName !== undefined) updates.exchangeName = exchangeName;
+    if (pricingSource !== undefined) updates.pricingSource = pricingSource;
+    if (fallbackPricingSource !== undefined) updates.fallbackPricingSource = fallbackPricingSource;
+    if (preferredStablecoin !== undefined) updates.preferredStablecoin = preferredStablecoin;
+    if (protectionEnabled !== undefined) updates.protectionEnabled = protectionEnabled;
+    if (protectionThreshold !== undefined) updates.protectionThreshold = protectionThreshold;
+    if (protectionCooldownMinutes !== undefined) updates.protectionCooldownMinutes = protectionCooldownMinutes;
     
-    if (updateData.check_interval !== undefined) {
-      updateData.checkInterval = updateData.check_interval === '' ? null : parseInt(updateData.check_interval);
-      delete updateData.check_interval;
-    }
+    // Update bot
+    await bot.update(updates);
     
-    if (updateData.allocation_percentage !== undefined) {
-      updateData.allocationPercentage = updateData.allocation_percentage === '' ? null : parseFloat(updateData.allocation_percentage);
-      delete updateData.allocation_percentage;
-    }
+    // Get updated bot
+    const updatedBot = await Bot.findByPk(botId);
     
-    if (updateData.manual_budget_amount !== undefined) {
-      updateData.manualBudgetAmount = updateData.manual_budget_amount === '' ? null : parseFloat(updateData.manual_budget_amount);
-      delete updateData.manual_budget_amount;
-    }
-    
-    // Ensure stablecoin has a default
-    if (updateData.preferred_stablecoin !== undefined) {
-      updateData.preferredStablecoin = updateData.preferred_stablecoin || 'USDT';
-      delete updateData.preferred_stablecoin;
-    }
-    
-    // Update the bot
-    await bot.update(updateData);
-    
-    return res.json(botToResponse(bot));
+    return res.json(botToResponse(updatedBot));
   } catch (error) {
     console.error('Error updating bot:', error);
     return res.status(500).json({
