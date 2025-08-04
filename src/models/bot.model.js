@@ -86,6 +86,11 @@ module.exports = (sequelize, Sequelize) => {
       defaultValue: 10.0,
       field: 'global_threshold_percentage'
     },
+    takeProfitPercentage: {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      field: 'take_profit_percentage'
+    },
     // Making sure to include these fields that were missing in the original python implementation
     globalPeakValue: {
       type: Sequelize.FLOAT,

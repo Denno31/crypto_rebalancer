@@ -68,6 +68,7 @@ const botToResponse = (bot, currentAsset = null) => {
     isLocked: bot.isLocked || false,
     errorState: bot.errorState,
     errorCount: bot.errorCount || 0,
+    takeProfitPercentage: bot.takeProfitPercentage,
     // Add trade stats
     tradeStats: {
       totalTrades,
@@ -117,7 +118,7 @@ const getAllBots = async (req, res) => {
       console.error('Error getting 3Commas accounts:', apiError);
       // Don't fail the whole request if we can't get account info
     }
-    
+  
     // Map to response format with current asset data
     const botsResponse = bots.map(bot => {
       // Find the current asset for this bot if available
@@ -175,6 +176,7 @@ const getBotById = async (req, res) => {
         }
       ]
     });
+    console.log({bot})
     
     if (!bot) {
       return res.status(404).json({
@@ -252,7 +254,8 @@ const createBot = async (req, res) => {
       price_source,
       allocation_percentage,
       manual_budget_amount,
-      preferred_stablecoin
+      preferred_stablecoin,
+      take_profit_percentage
     } = req.body;
     
     
@@ -277,6 +280,7 @@ const createBot = async (req, res) => {
       // Handle empty strings for numeric fields by converting to null
       allocationPercentage: allocation_percentage === '' ? null : parseFloat(allocation_percentage),
       manualBudgetAmount: manual_budget_amount === '' ? null : parseFloat(manual_budget_amount),
+      takeProfitPercentage: take_profit_percentage === '' || isNaN(parseFloat(take_profit_percentage)) ? null : parseFloat(take_profit_percentage),
       preferredStablecoin: preferred_stablecoin || 'USDT',
       userId: req.userId
     });
@@ -338,6 +342,11 @@ const updateBot = async (req, res) => {
     if (updateData.manual_budget_amount !== undefined) {
       updateData.manualBudgetAmount = updateData.manual_budget_amount === '' ? null : parseFloat(updateData.manual_budget_amount);
       delete updateData.manual_budget_amount;
+    }
+    
+    if (updateData.take_profit_percentage !== undefined) {
+      updateData.takeProfitPercentage = updateData.take_profit_percentage === '' || isNaN(parseFloat(updateData.take_profit_percentage)) ? null : parseFloat(updateData.take_profit_percentage);
+      delete updateData.take_profit_percentage;
     }
     
     // Ensure stablecoin has a default
@@ -434,7 +443,7 @@ const toggleBot = async (req, res) => {
 const getBotState = async (req, res) => {
   try {
     const botId = req.params.botId;
-    
+    console.log({botId})
     // Find bot and ensure it belongs to the user
     const bot = await Bot.findOne({
       where: {
@@ -442,6 +451,8 @@ const getBotState = async (req, res) => {
         userId: req.userId
       }
     });
+
+    console.log(bot.takeProfitPercentage)
     
     if (!bot) {
       return res.status(404).json({
@@ -471,7 +482,8 @@ const getBotState = async (req, res) => {
       return res.json({
         ...botToResponse(bot),
         currentPrice: null,
-        priceSource: null
+        priceSource: null,
+        takeProfitPercentage: bot.takeProfitPercentage
       });
     }
     
