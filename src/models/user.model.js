@@ -35,6 +35,16 @@ module.exports = (sequelize, Sequelize) => {
       defaultValue: false,
       field: 'is_superuser'
     },
+    resetToken: {
+      type: Sequelize.STRING,
+      allowNull: true,
+      field: 'reset_token'
+    },
+    resetTokenExpiry: {
+      type: Sequelize.DATE,
+      allowNull: true,
+      field: 'reset_token_expiry'
+    },
     createdAt: {
       type: Sequelize.DATE,
       defaultValue: Sequelize.NOW,

@@ -27,4 +27,25 @@ router.post(
   authController.login
 );
 
+// Request password reset route
+router.post(
+  '/password-reset-request',
+  [
+    // Validation middleware
+    body('email').isEmail().withMessage('Must be a valid email address')
+  ],
+  authController.requestPasswordReset
+);
+
+// Reset password with token route
+router.post(
+  '/password-reset',
+  [
+    // Validation middleware
+    body('token').not().isEmpty().withMessage('Token is required'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long')
+  ],
+  authController.resetPassword
+);
+
 module.exports = router;
