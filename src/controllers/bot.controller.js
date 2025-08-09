@@ -243,26 +243,27 @@ const getBotById = async (req, res) => {
 const createBot = async (req, res) => {
   try {
     // Extract bot data from request
- 
+    console.log(req.body);
     const { 
       name, 
       enabled, 
       coins, 
-      threshold_percentage, 
-      check_interval, 
-      initial_coin, 
-      account_id,
-      price_source,
-      allocation_percentage,
-      manual_budget_amount,
-      preferred_stablecoin,
-      take_profit_percentage
+      thresholdPercentage, 
+      checkInterval, 
+      initialCoin, 
+      accountId,
+      priceSource,
+      allocationPercentage,
+      manualBudgetAmount,
+      preferredStablecoin,
+      takeProfitPercentage
     } = req.body;
     
+   
     
     // Validate required fields
     
-    if (!name || !coins || !threshold_percentage || !check_interval || !initial_coin || !account_id) {
+    if (!name || !coins || !thresholdPercentage || !checkInterval || !initialCoin || !accountId) {
       return res.status(400).json({
         message: "Missing required fields"
       });
@@ -273,16 +274,16 @@ const createBot = async (req, res) => {
       name,
       enabled: enabled !== false, // Default to true if not specified
       coins: Array.isArray(coins) ? coins.join(',') : coins, // Handle both array and comma-separated string
-      thresholdPercentage: parseFloat(threshold_percentage) || 0,
-      checkInterval: parseInt(check_interval) || 0,
-      initialCoin: initial_coin,
-      accountId: account_id,
-      priceSource: price_source,
+      thresholdPercentage: parseFloat(thresholdPercentage) || 0,
+      checkInterval: parseInt(checkInterval) || 0,
+      initialCoin: initialCoin,
+      accountId: accountId,
+      priceSource: priceSource,
       // Handle empty strings for numeric fields by converting to null
-      allocationPercentage: allocation_percentage === '' ? null : parseFloat(allocation_percentage),
-      manualBudgetAmount: manual_budget_amount === '' ? null : parseFloat(manual_budget_amount),
-      takeProfitPercentage: take_profit_percentage === '' || isNaN(parseFloat(take_profit_percentage)) ? null : parseFloat(take_profit_percentage),
-      preferredStablecoin: preferred_stablecoin || 'USDT',
+      allocationPercentage: allocationPercentage === '' ? null : parseFloat(allocationPercentage),
+      manualBudgetAmount: manualBudgetAmount === '' ? null : parseFloat(manualBudgetAmount),
+      takeProfitPercentage: takeProfitPercentage === '' || isNaN(parseFloat(takeProfitPercentage)) ? null : parseFloat(takeProfitPercentage),
+      preferredStablecoin: preferredStablecoin || 'USDT',
       userId: req.userId
     });
     
