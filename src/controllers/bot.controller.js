@@ -81,7 +81,10 @@ const botToResponse = (bot, currentAsset = null) => {
       coin: currentAsset.coin,
       amount: currentAsset.amount,
       usdtEquivalent: currentAsset.usdtEquivalent,
-      entryPrice: currentAsset.entryPrice
+      entryPrice: currentAsset.entryPrice,
+      realTimeUsdtEquivalent: currentAsset.realTimeUsdtEquivalent,
+      profit: currentAsset.profit,
+      profitPercentage: currentAsset.profitPercentage
     } : null
   };
 };
@@ -160,7 +163,7 @@ const getAllBots = async (req, res) => {
 const getBotById = async (req, res) => {
   try {
     const botId = req.params.botId;
-    
+    let botAccountData = null;
     // Find bot and ensure it belongs to the user
     const bot = await Bot.findOne({
       where: {
@@ -174,11 +177,15 @@ const getBotById = async (req, res) => {
           attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
           limit: 10,
           order: [['executedAt', 'DESC']]
+        },{
+          model: BotAsset,
+          as: 'botAssets',
+          attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
         }
       ]
     });
-    console.log({bot})
     
+
     if (!bot) {
       return res.status(404).json({
         message: "Bot not found"
@@ -207,17 +214,42 @@ const getBotById = async (req, res) => {
         try {
           // Get account info from 3Commas
           const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
-          
+          botAccountData = accountData;
           if (!error && accountData) {
-            // Get current coin balance
-            const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
-            
-            if (coinBalance) {
+            // Check if balances property exists in the account data
+            if (accountData.balances) {
+              // Get current coin balance
+              const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
+              
+              if (coinBalance) {
+                currentAsset = {
+                  coin: bot.currentCoin,
+                  amount: parseFloat(coinBalance.amount),
+                  usdtEquivalent: parseFloat(coinBalance.usd_value),
+                  entryPrice: 0 // We don't have this from 3Commas
+                };
+              }
+            } else {
+              console.log('Account data does not contain balances property:', Object.keys(accountData));
+              // Fallback to default asset info or try alternative API
+              // get realtime price
+              const { price } = await priceService.getPrice(
+                { pricingSource: '3commas', fallbackSource: 'coingecko' },
+                { apiKey: threeCommasClient.apiKey, apiSecret: threeCommasClient.apiSecret },
+                bot.currentCoin,
+                'USDT',
+                bot.id
+              );
+              
+              const botUnits = bot.botAssets.find(asset => asset.coin === bot.currentCoin).amount
               currentAsset = {
                 coin: bot.currentCoin,
-                amount: parseFloat(coinBalance.amount),
-                usdtEquivalent: parseFloat(coinBalance.usd_value),
-                entryPrice: 0 // We don't have this from 3Commas
+                amount: botUnits,
+                usdtEquivalent: bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent,
+                entryPrice: bot.botAssets.find(asset => asset.coin === bot.currentCoin).entryPrice,
+                realTimeUsdtEquivalent: botUnits * price,
+                profit: botUnits * price - bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent,
+                profitPercentage: ((botUnits * price - bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent) / bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent) * 100
               };
             }
           }
@@ -227,9 +259,12 @@ const getBotById = async (req, res) => {
         }
       }
     }
-    
+    console.log(currentAsset)
+    const botResponse = botToResponse(bot, currentAsset);
+    botResponse.exchangeName = botAccountData.exchange_name;
+    botResponse.exchangeIcon = botAccountData.market_icon;
     // Return bot with current asset info
-    return res.json(botToResponse(bot, currentAsset));
+    return res.json(botResponse);
   } catch (error) {
     console.error('Error getting bot:', error);
     return res.status(500).json({
