@@ -10,12 +10,15 @@ const { Op } = require('sequelize');
 exports.getBotDeviations = async (req, res) => {
   const botId = req.params.botId;
   
+  
   try {
     // Get query parameters
     const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // Default to 7 days ago
     const to = req.query.to ? new Date(req.query.to) : new Date();
     const baseCoin = req.query.baseCoin; // Optional filter
     const targetCoin = req.query.targetCoin; // Optional filter
+    const page = req.query.page || 1;
+    const limit = req.query.limit || 10;
     
     // Build query condition
     const whereCondition = {
@@ -32,9 +35,12 @@ exports.getBotDeviations = async (req, res) => {
     // Query the database
     const deviations = await CoinDeviation.findAll({
       where: whereCondition,
-      order: [['timestamp', 'ASC']]
+      order: [['timestamp', 'DESC']],
+      offset: (page - 1) * limit,
+      limit: limit
     });
     
+
     // Process the data for charting
     // Group by base_coin and target_coin pairs
     const groupedData = {};
