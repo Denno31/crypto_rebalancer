@@ -566,6 +566,8 @@ const getBotPrices = async (req, res) => {
     const botId = req.params.botId;
     const fromTime = req.query.fromTime ? new Date(req.query.fromTime) : null;
     const toTime = req.query.toTime ? new Date(req.query.toTime) : null;
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
     
     // Build query
     const query = { botId };
@@ -582,7 +584,8 @@ const getBotPrices = async (req, res) => {
     const prices = await PriceHistory.findAll({
       where: query,
       order: [['timestamp', 'DESC']],
-      limit: 1000
+      limit,
+      offset: (page - 1) * limit
     });
     
     return res.json(prices);
@@ -600,7 +603,8 @@ const getBotTrades = async (req, res) => {
   try {
     const botId = req.params.botId;
     const status = req.query.status;
-    const limit = parseInt(req.query.limit) || 100;
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
     
     // Build query
     const query = { botId };
@@ -613,7 +617,8 @@ const getBotTrades = async (req, res) => {
     const trades = await Trade.findAll({
       where: query,
       order: [['executedAt', 'DESC']],
-      limit
+      limit,
+      offset: (page - 1) * limit
     });
     
     return res.json(trades);
@@ -631,7 +636,8 @@ const getBotLogs = async (req, res) => {
   try {
     const botId = req.params.botId;
     const level = req.query.level;
-    const limit = parseInt(req.query.limit) || 100;
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
     
     // Build query - use snake_case 'bot_id' instead of camelCase 'botId'
     // This matches the actual column name in the database
@@ -645,7 +651,8 @@ const getBotLogs = async (req, res) => {
     const logs = await LogEntry.findAll({
       where: query,
       order: [['timestamp', 'DESC']],
-      limit
+      limit,
+      offset: (page - 1) * limit
     });
     
     return res.json(logs);
@@ -740,8 +747,9 @@ const getBotSwapDecisions = async (req, res) => {
     return res.status(400).send({ message: 'Bot ID is required' });
   }
   
-  const limit = parseInt(req.query.limit) || 100;
-  const offset = parseInt(req.query.offset) || 0;
+  const limit = parseInt(req.query.limit) || 10;
+  const page = parseInt(req.query.page) || 1;
+  const offset = (page - 1) * limit;
   const swapPerformed = req.query.swapPerformed === 'true' ? true : 
                        (req.query.swapPerformed === 'false' ? false : null);
   

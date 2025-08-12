@@ -14,13 +14,16 @@ const ApiConfig = db.apiConfig;
 exports.getPriceComparison = async (req, res) => {
   try {
     const botId = req.params.botId;
-    
+    const page = req.query.page || 1;
+    const limit = req.query.limit || 10;
     // Verify bot belongs to the user
     const bot = await Bot.findOne({
       where: {
         id: botId,
         userId: req.userId
-      }
+      },
+      offset: (page - 1) * limit,
+      limit: limit
     });
     
     if (!bot) {
