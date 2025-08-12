@@ -81,7 +81,10 @@ const botToResponse = (bot, currentAsset = null) => {
       coin: currentAsset.coin,
       amount: currentAsset.amount,
       usdtEquivalent: currentAsset.usdtEquivalent,
-      entryPrice: currentAsset.entryPrice
+      entryPrice: currentAsset.entryPrice,
+      realTimeUsdtEquivalent: currentAsset.realTimeUsdtEquivalent,
+      profit: currentAsset.profit,
+      profitPercentage: currentAsset.profitPercentage
     } : null
   };
 };
@@ -160,7 +163,7 @@ const getAllBots = async (req, res) => {
 const getBotById = async (req, res) => {
   try {
     const botId = req.params.botId;
-    
+    let botAccountData = null;
     // Find bot and ensure it belongs to the user
     const bot = await Bot.findOne({
       where: {
@@ -174,11 +177,15 @@ const getBotById = async (req, res) => {
           attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
           limit: 10,
           order: [['executedAt', 'DESC']]
+        },{
+          model: BotAsset,
+          as: 'botAssets',
+          attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
         }
       ]
     });
-    console.log({bot})
     
+
     if (!bot) {
       return res.status(404).json({
         message: "Bot not found"
@@ -207,17 +214,42 @@ const getBotById = async (req, res) => {
         try {
           // Get account info from 3Commas
           const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
-          
+          botAccountData = accountData;
           if (!error && accountData) {
-            // Get current coin balance
-            const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
-            
-            if (coinBalance) {
+            // Check if balances property exists in the account data
+            if (accountData.balances) {
+              // Get current coin balance
+              const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
+              
+              if (coinBalance) {
+                currentAsset = {
+                  coin: bot.currentCoin,
+                  amount: parseFloat(coinBalance.amount),
+                  usdtEquivalent: parseFloat(coinBalance.usd_value),
+                  entryPrice: 0 // We don't have this from 3Commas
+                };
+              }
+            } else {
+              console.log('Account data does not contain balances property:', Object.keys(accountData));
+              // Fallback to default asset info or try alternative API
+              // get realtime price
+              const { price } = await priceService.getPrice(
+                { pricingSource: '3commas', fallbackSource: 'coingecko' },
+                { apiKey: threeCommasClient.apiKey, apiSecret: threeCommasClient.apiSecret },
+                bot.currentCoin,
+                'USDT',
+                bot.id
+              );
+              
+              const botUnits = bot.botAssets.find(asset => asset.coin === bot.currentCoin).amount
               currentAsset = {
                 coin: bot.currentCoin,
-                amount: parseFloat(coinBalance.amount),
-                usdtEquivalent: parseFloat(coinBalance.usd_value),
-                entryPrice: 0 // We don't have this from 3Commas
+                amount: botUnits,
+                usdtEquivalent: bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent,
+                entryPrice: bot.botAssets.find(asset => asset.coin === bot.currentCoin).entryPrice,
+                realTimeUsdtEquivalent: botUnits * price,
+                profit: botUnits * price - bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent,
+                profitPercentage: ((botUnits * price - bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent) / bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent) * 100
               };
             }
           }
@@ -227,9 +259,12 @@ const getBotById = async (req, res) => {
         }
       }
     }
-    
+    console.log(currentAsset)
+    const botResponse = botToResponse(bot, currentAsset);
+    botResponse.exchangeName = botAccountData.exchange_name;
+    botResponse.exchangeIcon = botAccountData.market_icon;
     // Return bot with current asset info
-    return res.json(botToResponse(bot, currentAsset));
+    return res.json(botResponse);
   } catch (error) {
     console.error('Error getting bot:', error);
     return res.status(500).json({
@@ -243,26 +278,27 @@ const getBotById = async (req, res) => {
 const createBot = async (req, res) => {
   try {
     // Extract bot data from request
- 
+    console.log(req.body);
     const { 
       name, 
       enabled, 
       coins, 
-      threshold_percentage, 
-      check_interval, 
-      initial_coin, 
-      account_id,
-      price_source,
-      allocation_percentage,
-      manual_budget_amount,
-      preferred_stablecoin,
-      take_profit_percentage
+      thresholdPercentage, 
+      checkInterval, 
+      initialCoin, 
+      accountId,
+      priceSource,
+      allocationPercentage,
+      manualBudgetAmount,
+      preferredStablecoin,
+      takeProfitPercentage
     } = req.body;
     
+   
     
     // Validate required fields
     
-    if (!name || !coins || !threshold_percentage || !check_interval || !initial_coin || !account_id) {
+    if (!name || !coins || !thresholdPercentage || !checkInterval || !initialCoin || !accountId) {
       return res.status(400).json({
         message: "Missing required fields"
       });
@@ -273,16 +309,16 @@ const createBot = async (req, res) => {
       name,
       enabled: enabled !== false, // Default to true if not specified
       coins: Array.isArray(coins) ? coins.join(',') : coins, // Handle both array and comma-separated string
-      thresholdPercentage: parseFloat(threshold_percentage) || 0,
-      checkInterval: parseInt(check_interval) || 0,
-      initialCoin: initial_coin,
-      accountId: account_id,
-      priceSource: price_source,
+      thresholdPercentage: parseFloat(thresholdPercentage) || 0,
+      checkInterval: parseInt(checkInterval) || 0,
+      initialCoin: initialCoin,
+      accountId: accountId,
+      priceSource: priceSource,
       // Handle empty strings for numeric fields by converting to null
-      allocationPercentage: allocation_percentage === '' ? null : parseFloat(allocation_percentage),
-      manualBudgetAmount: manual_budget_amount === '' ? null : parseFloat(manual_budget_amount),
-      takeProfitPercentage: take_profit_percentage === '' || isNaN(parseFloat(take_profit_percentage)) ? null : parseFloat(take_profit_percentage),
-      preferredStablecoin: preferred_stablecoin || 'USDT',
+      allocationPercentage: allocationPercentage === '' ? null : parseFloat(allocationPercentage),
+      manualBudgetAmount: manualBudgetAmount === '' ? null : parseFloat(manualBudgetAmount),
+      takeProfitPercentage: takeProfitPercentage === '' || isNaN(parseFloat(takeProfitPercentage)) ? null : parseFloat(takeProfitPercentage),
+      preferredStablecoin: preferredStablecoin || 'USDT',
       userId: req.userId
     });
     
