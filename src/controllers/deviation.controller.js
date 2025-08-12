@@ -35,7 +35,7 @@ exports.getBotDeviations = async (req, res) => {
     // Query the database
     const deviations = await CoinDeviation.findAll({
       where: whereCondition,
-      order: [['timestamp', 'DESC']],
+      order: [['timestamp', 'ASC']],
       offset: (page - 1) * limit,
       limit: limit
     });

@@ -14,16 +14,14 @@ const ApiConfig = db.apiConfig;
 exports.getPriceComparison = async (req, res) => {
   try {
     const botId = req.params.botId;
-    const page = req.query.page || 1;
-    const limit = req.query.limit || 10;
+    
     // Verify bot belongs to the user
     const bot = await Bot.findOne({
       where: {
         id: botId,
         userId: req.userId
       },
-      offset: (page - 1) * limit,
-      limit: limit
+      
     });
     
     if (!bot) {
@@ -137,11 +135,22 @@ exports.getPriceComparison = async (req, res) => {
 exports.getHistoricalComparison = async (req, res) => {
   try {
     const botId = req.params.botId;
-    
+    const testMode = true;
+    // return an empty array for now
+    return res.json({
+      botId,
+      botName: "",
+      fromTime: null,
+      toTime: null,
+      data: []
+    });
+
     // Parse query parameters
     const fromTime = req.query.from_time ? new Date(req.query.from_time) : null;
     const toTime = req.query.to_time ? new Date(req.query.to_time) : new Date();
     const coin = req.query.coin || null;
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
     
     // Verify bot belongs to the user
     const bot = await Bot.findOne({
