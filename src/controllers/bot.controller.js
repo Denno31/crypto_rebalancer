@@ -241,12 +241,12 @@ const getBotById = async (req, res) => {
                 bot.id
               );
               
-              const botUnits = bot.botAssets.find(asset => asset.coin === bot.currentCoin).amount
+              const botUnits = bot.botAssets.find(asset => asset.coin === bot.currentCoin)?.amount
               currentAsset = {
                 coin: bot.currentCoin,
                 amount: botUnits,
-                usdtEquivalent: bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent,
-                entryPrice: bot.botAssets.find(asset => asset.coin === bot.currentCoin).entryPrice,
+                usdtEquivalent: bot.botAssets.find(asset => asset.coin === bot.currentCoin)?.usdtEquivalent,
+                entryPrice: bot.botAssets.find(asset => asset.coin === bot.currentCoin)?.entryPrice,
                 realTimeUsdtEquivalent: botUnits * price,
                 profit: botUnits * price - bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent,
                 profitPercentage: ((botUnits * price - bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent) / bot.botAssets.find(asset => asset.coin === bot.currentCoin).usdtEquivalent) * 100
@@ -259,10 +259,10 @@ const getBotById = async (req, res) => {
         }
       }
     }
-    console.log(currentAsset)
+  
     const botResponse = botToResponse(bot, currentAsset);
-    botResponse.exchangeName = botAccountData.exchange_name;
-    botResponse.exchangeIcon = botAccountData.market_icon;
+    botResponse.exchangeName = botAccountData?.exchange_name;
+    botResponse.exchangeIcon = botAccountData?.market_icon;
     // Return bot with current asset info
     return res.json(botResponse);
   } catch (error) {
@@ -742,14 +742,14 @@ const getTradeDecisionLogs = async (req, res) => {
 // Get swap decisions for a bot
 const getBotSwapDecisions = async (req, res) => {
   const botId = req.params.botId;
-  console.log(botId)
+  
   if (!botId) {
     return res.status(400).send({ message: 'Bot ID is required' });
   }
   
   const limit = parseInt(req.query.limit) || 10;
-  const page = parseInt(req.query.page) || 1;
-  const offset = (page - 1) * limit;
+  // const page = parseInt(req.query.offset) || 1;
+  const offset = parseInt(req.query.offset) || 0;
   const swapPerformed = req.query.swapPerformed === 'true' ? true : 
                        (req.query.swapPerformed === 'false' ? false : null);
   
@@ -758,6 +758,7 @@ const getBotSwapDecisions = async (req, res) => {
     const bot = await Bot.findOne({
       where: { id: botId, userId: req.userId }
     });
+
     
     if (!bot) {
       return res.status(404).send({ message: 'Bot not found' });
@@ -768,7 +769,7 @@ const getBotSwapDecisions = async (req, res) => {
     if (swapPerformed !== null) {
       whereCondition.swapPerformed = swapPerformed;
     }
-    
+    console.log({limit,offset})
     // Get swap decisions with pagination
     const swapDecisions = await BotSwapDecision.findAndCountAll({
       where: whereCondition,
@@ -781,6 +782,8 @@ const getBotSwapDecisions = async (req, res) => {
       }
     });
     
+    // console.log(swapDecisions.rows.slice(0, 1))
+
     res.status(200).send({
       total: swapDecisions.count,
       offset,

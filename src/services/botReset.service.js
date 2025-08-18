@@ -84,10 +84,10 @@ class BotResetService {
       // Determine which coin to reset to
       let targetCoin = bot.currentCoin; // Default for soft reset
       
-      if (resetType === 'hard') {
+     
         // Hard reset goes back to initial coin
         targetCoin = bot.initialCoin || bot.preferredStablecoin || 'USDT';
-      }
+   
       
       // Delete all associated coin snapshots
       logMessage('INFO', `Deleting coin snapshots for bot ${botId}`, bot.name);

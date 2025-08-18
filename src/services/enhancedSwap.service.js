@@ -453,7 +453,7 @@ class EnhancedSwapService {
       }
       
       // Default amount to use
-      let amount = bot.manualBudgetAmount || systemConfig.defaultInitialAmount || 0.01;
+      let  amount = bot.manualBudgetAmount || systemConfig.defaultInitialAmount || 0.01;
       
       // If we successfully got balances and the coin exists, use the existing amount
       if (!balancesError && availableCoins) {
@@ -482,7 +482,8 @@ class EnhancedSwapService {
         botId: bot.id,
         coin: coin,
         amount: amount,
-        entryPrice: price
+        entryPrice: price,
+        usdtEquivalent: amount * price
       });
       
       return {
