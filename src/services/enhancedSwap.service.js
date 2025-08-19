@@ -174,7 +174,19 @@ class EnhancedSwapService {
             // If profit exceeds take profit threshold, sell to stablecoin
             if (profitPercentage >= bot.takeProfitPercentage) {
               logMessage('INFO', `Take profit threshold reached (${profitPercentage.toFixed(2)}% >= ${bot.takeProfitPercentage}%). Selling ${bot.currentCoin} to stablecoin.`, bot.name);
-              await LogEntry.log(db, 'TRADE', `Take profit threshold reached (${profitPercentage.toFixed(2)}% >= ${bot.takeProfitPercentage}%). Selling ${bot.currentCoin} to stablecoin.`, bot.id);
+              // Get the bot's reset count for the log entry
+              const botResetCount = bot.resetCount || 0;
+              
+              // Create log entry with reset count
+              const logEntry = await db.logEntry.create({
+                botId: bot.id,
+                level: 'TRADE',
+                message: `Take profit threshold reached (${profitPercentage.toFixed(2)}% >= ${bot.takeProfitPercentage}%). Selling ${bot.currentCoin} to stablecoin.`,
+                timestamp: new Date(),
+                resetCount: botResetCount
+              });
+              
+              console.log(`[TRADE] [${bot.name}] Take profit threshold reached (${profitPercentage.toFixed(2)}% >= ${bot.takeProfitPercentage}%). Selling ${bot.currentCoin} to stablecoin.`);
               
               const stablecoin = bot.preferredStablecoin || 'USDT';
               
@@ -190,7 +202,15 @@ class EnhancedSwapService {
               
               if (sellError) {
                 logMessage('ERROR', `Failed to execute take profit sell: ${JSON.stringify(sellError)}`, bot.name);
-                await LogEntry.log(db, 'ERROR', `Failed to execute take profit sell: ${JSON.stringify(sellError)}`, bot.id);
+                await db.logEntry.create({
+                  botId: bot.id,
+                  level: 'ERROR',
+                  message: `Failed to execute take profit sell: ${JSON.stringify(sellError)}`,
+                  timestamp: new Date(),
+                  resetCount: botResetCount
+                });
+                
+                console.error(`[ERROR] [${bot.name}] Failed to execute take profit sell: ${JSON.stringify(sellError)}`);
                 
                 return {
                   success: false,
@@ -200,7 +220,17 @@ class EnhancedSwapService {
               }
               
               logMessage('SUCCESS', `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`, bot.name);
-              await LogEntry.log(db, 'SUCCESS', `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`, bot.id);
+              
+              // Create success log entry with reset count
+              await db.logEntry.create({
+                botId: bot.id,
+                level: 'SUCCESS',
+                message: `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`,
+                timestamp: new Date(),
+                resetCount: botResetCount
+              });
+              
+              console.log(`[SUCCESS] [${bot.name}] Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`);
               
               return {
                 success: true,
@@ -370,6 +400,18 @@ class EnhancedSwapService {
       
       if (tradeDetails.botId) {
         tradeStepData.botId = tradeDetails.botId;
+        
+        // Get bot's current reset count and apply it to the trade step
+        try {
+          const bot = await db.bot.findByPk(tradeDetails.botId);
+          if (bot && bot.resetCount !== undefined) {
+            tradeStepData.resetCount = bot.resetCount;
+          }
+        } catch (err) {
+          console.error('Error getting bot reset count:', err);
+          // Default to 0 if can't get the bot's reset count
+          tradeStepData.resetCount = 0;
+        }
       }
       
       let tradeStep;

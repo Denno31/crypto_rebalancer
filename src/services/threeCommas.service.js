@@ -1296,7 +1296,8 @@ class ThreeCommasService {
               botId: botId,
               level: 'TRADE',
               message: `Manual sell: ${fromCoin} → ${targetStablecoin} (${amount} ${fromCoin})`,
-              timestamp: new Date()
+              timestamp: new Date(),
+              resetCount: bot.resetCount || 0 // Include bot's reset count
             });
           }
         } catch (dbError) {

@@ -32,6 +32,18 @@ exports.getBotDeviations = async (req, res) => {
     if (baseCoin) whereCondition.base_coin = baseCoin;
     if (targetCoin) whereCondition.target_coin = targetCoin;
     
+    // Get bot's current reset count if we have a botId
+    let currentResetCount = 0;
+    if (botId) {
+      const bot = await db.bot.findByPk(botId);
+      if (bot) {
+        currentResetCount = bot.resetCount || 0;
+      }
+    }
+    
+    // Add reset_count to where condition to filter out data from before resets
+    whereCondition.reset_count = currentResetCount;
+    
     // Query the database
     const deviations = await CoinDeviation.findAll({
       where: whereCondition,

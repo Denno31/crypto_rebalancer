@@ -25,6 +25,12 @@ module.exports = (sequelize, Sequelize) => {
         model: 'bots',
         key: 'id'
       }
+    },
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
     }
   }, {
     tableName: 'logs',

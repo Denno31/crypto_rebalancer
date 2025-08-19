@@ -77,6 +77,12 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.JSON,
       allowNull: true,
       field: 'raw_trade_data'
+    },
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
     }
   }, {
     tableName: 'trade_steps',

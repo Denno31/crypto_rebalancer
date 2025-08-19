@@ -580,9 +580,21 @@ const getBotPrices = async (req, res) => {
       query.timestamp = { ...query.timestamp, [Op.lte]: toTime };
     }
     
+    // Create a separate query for price history to include reset count
+    const priceQuery = { ...query };
+    
+    // Get bot's current reset count if we have a botId
+    if (botId) {
+      const bot = await Bot.findByPk(botId);
+      if (bot) {
+        // Add reset_count to query to filter pre-reset data
+        priceQuery.resetCount = bot.resetCount || 0;
+      }
+    }
+    
     // Get prices
     const prices = await PriceHistory.findAll({
-      where: query,
+      where: priceQuery,
       order: [['timestamp', 'DESC']],
       limit,
       offset: (page - 1) * limit
@@ -611,6 +623,15 @@ const getBotTrades = async (req, res) => {
     
     if (status) {
       query.status = status;
+    }
+    
+    // Get bot's current reset count if we have a botId
+    if (botId) {
+      const bot = await Bot.findByPk(botId);
+      if (bot) {
+        // Add reset_count to query to filter pre-reset data
+        query.resetCount = bot.resetCount || 0;
+      }
     }
     
     // Get trades
@@ -647,9 +668,21 @@ const getBotLogs = async (req, res) => {
       query.level = level.toUpperCase();
     }
     
+    // Make a separate query for logs to include reset count
+    const logQuery = { ...query };
+    
+    // Get bot's current reset count if we have a botId
+    if (botId) {
+      const bot = await Bot.findByPk(botId);
+      if (bot) {
+        // Add reset_count to query to filter pre-reset data
+        logQuery.resetCount = bot.resetCount || 0;
+      }
+    }
+    
     // Get logs
     const logs = await LogEntry.findAll({
-      where: query,
+      where: logQuery,
       order: [['timestamp', 'DESC']],
       limit,
       offset: (page - 1) * limit
@@ -834,39 +867,49 @@ const getBotAssets = async (req, res) => {
       apiConfig.apiSecret
     );
     
-    // Get bot assets from database
+    // Get bot if not already retrieved
+    let botDetails = await Bot.findByPk(botId);
+    if (!botDetails) {
+      return res.status(404).json({ message: "Bot not found" });
+    }
+    const currentResetCount = botDetails.resetCount || 0;
+    
+    // Get bot assets from database with current reset count
     const botAssets = await BotAsset.findAll({
-      where: { botId },
+      where: { 
+        botId,
+        resetCount: currentResetCount 
+      },
       order: [['updatedAt', 'DESC']]
     });
     
     // If we have a current coin, ensure we get up-to-date USDT value
     let updatedAssets = [...botAssets];
     
-    if (bot.currentCoin) {
+    if (botDetails.currentCoin) {
       try {
         // Get preferred stablecoin or default to USDT
-        const stablecoin = bot.preferredStablecoin || 'USDT';
+        const stablecoin = botDetails.preferredStablecoin || 'USDT';
         
         // Get latest price in the preferred stablecoin
         const { price } = await priceService.getPrice(
           { pricingSource: '3commas', fallbackSource: 'coingecko' },
           { apiKey: apiConfig.apiKey, apiSecret: apiConfig.apiSecret },
-          bot.currentCoin,
+          botDetails.currentCoin,
           stablecoin,
           botId
         );
         
         // Find or create asset record for current coin
-        let currentAsset = botAssets.find(asset => asset.coin === bot.currentCoin);
+        let currentAsset = botAssets.find(asset => asset.coin === botDetails.currentCoin);
         
         // If bot has a current coin but no asset record, create one with estimated data
         if (!currentAsset) {
           // Attempt to get balance from 3Commas
-          const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
+          const [error, accountData] = await threeCommasClient.request('accounts', botDetails.accountId);
           
           if (!error && accountData && accountData.balances) {
-            const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
+            const coinBalance = accountData.balances.find(b => b.currency_code === botDetails.currentCoin);
             
             if (coinBalance && parseFloat(coinBalance.amount) > 0) {
               // Create asset record
@@ -875,8 +918,9 @@ const getBotAssets = async (req, res) => {
               
               currentAsset = await BotAsset.create({
                 botId,
-                coin: bot.currentCoin,
+                coin: botDetails.currentCoin,
                 amount,
+                resetCount: currentResetCount,
                 entryPrice: price,
                 usdtEquivalent: stablecoinEquivalent, // Keep field name for DB compatibility
                 stablecoin: stablecoin,

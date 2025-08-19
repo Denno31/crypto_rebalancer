@@ -107,6 +107,12 @@ class BotResetService {
         where: { botId }
       });
       
+      // Increment reset count
+      const currentResetCount = bot.resetCount || 0;
+      const newResetCount = currentResetCount + 1;
+      
+      logMessage('INFO', `Incrementing reset_count from ${currentResetCount} to ${newResetCount} for bot ${botId}`, bot.name);
+      
       // Reset bot state
       const updates = {
         currentCoin: null, // Set to null so bot initialization logic can create new snapshots
@@ -117,7 +123,8 @@ class BotResetService {
         protectionCooldownUntil: null,
         isLocked: false,
         errorState: null,
-        errorCount: 0
+        errorCount: 0,
+        resetCount: newResetCount // Increment reset count
       };
       
       logMessage('INFO', `Updating bot state for bot ${botId}`, bot.name);

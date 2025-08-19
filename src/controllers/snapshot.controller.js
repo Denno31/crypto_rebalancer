@@ -30,9 +30,15 @@ exports.getPriceComparison = async (req, res) => {
       });
     }
     
-    // Get all coin snapshots for this bot
+    // Get bot's current reset count from already retrieved bot object
+    const currentResetCount = bot.resetCount || 0;
+    
+    // Get all coin snapshots for this bot with current reset count
     const snapshots = await CoinSnapshot.findAll({
-      where: { botId }
+      where: { 
+        botId,
+        resetCount: currentResetCount
+      }
     });
     
     if (!snapshots || snapshots.length === 0) {
@@ -191,6 +197,16 @@ exports.getHistoricalComparison = async (req, res) => {
       };
     }
     
+    // Add reset count to price history query
+    if (botId) {
+      const bot = await db.bot.findByPk(botId);
+      if (bot) {
+        const currentResetCount = bot.resetCount || 0;
+        if (!query.where) query.where = {};
+        query.where.resetCount = currentResetCount;
+      }
+    }
+    
     // Get price history data
     const priceHistory = await PriceHistory.findAll(query);
     
@@ -201,6 +217,15 @@ exports.getHistoricalComparison = async (req, res) => {
     
     if (coin) {
       snapshotsQuery.where.coin = coin;
+    }
+    
+    // Add reset count to snapshots query if we have a botId
+    if (botId) {
+      const bot = await db.bot.findByPk(botId);
+      if (bot) {
+        const currentResetCount = bot.resetCount || 0;
+        snapshotsQuery.where.resetCount = currentResetCount;
+      }
     }
     
     const snapshots = await CoinSnapshot.findAll(snapshotsQuery);
