@@ -151,6 +151,68 @@ class EnhancedSwapService {
       // STEP 3: Fetch actual commission rates if possible
       await this.fetchCommissionRates(bot, threeCommasClient);
       
+      // STEP 3.5: Check for take profit threshold before evaluating swaps
+      if (bot.useTakeProfit && bot.takeProfitPercentage > 0) {
+        const currentAsset = await BotAsset.findOne({
+          where: {
+            botId: bot.id,
+            coin: bot.currentCoin
+          }
+        });
+        
+        if (currentAsset) {
+          const currentPrice = priceData[bot.currentCoin].price;
+          const entryPrice = currentAsset.entryPrice;
+          
+          if (entryPrice && currentPrice) {
+            // Calculate profit percentage
+            const profitPercentage = ((currentPrice - entryPrice) / entryPrice) * 100;
+            
+            logMessage('INFO', `Current profit for ${bot.currentCoin}: ${profitPercentage.toFixed(2)}% (Take profit set at ${bot.takeProfitPercentage}%)`, bot.name);
+            await LogEntry.log(db, 'INFO', `Current profit for ${bot.currentCoin}: ${profitPercentage.toFixed(2)}% (Take profit set at ${bot.takeProfitPercentage}%)`, bot.id);
+            
+            // If profit exceeds take profit threshold, sell to stablecoin
+            if (profitPercentage >= bot.takeProfitPercentage) {
+              logMessage('INFO', `Take profit threshold reached (${profitPercentage.toFixed(2)}% >= ${bot.takeProfitPercentage}%). Selling ${bot.currentCoin} to stablecoin.`, bot.name);
+              await LogEntry.log(db, 'TRADE', `Take profit threshold reached (${profitPercentage.toFixed(2)}% >= ${bot.takeProfitPercentage}%). Selling ${bot.currentCoin} to stablecoin.`, bot.id);
+              
+              const stablecoin = bot.preferredStablecoin || 'USDT';
+              
+              const [sellError, sellResult] = await threeCommasClient.sellToStablecoin(
+                bot.accountId,
+                bot.currentCoin,
+                stablecoin,
+                currentAsset.amount,
+                process.env.SIMULATE_TRADES === 'true' ? 'paper' : 'live',
+                bot.id,
+                db
+              );
+              
+              if (sellError) {
+                logMessage('ERROR', `Failed to execute take profit sell: ${JSON.stringify(sellError)}`, bot.name);
+                await LogEntry.log(db, 'ERROR', `Failed to execute take profit sell: ${JSON.stringify(sellError)}`, bot.id);
+                
+                return {
+                  success: false,
+                  message: `Take profit sell failed: ${JSON.stringify(sellError)}`,
+                  error: sellError
+                };
+              }
+              
+              logMessage('SUCCESS', `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`, bot.name);
+              await LogEntry.log(db, 'SUCCESS', `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`, bot.id);
+              
+              return {
+                success: true,
+                message: `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`,
+                takeProfitSell: true,
+                sellResult
+              };
+            }
+          }
+        }
+      }
+      
       // STEP 4: Evaluate swap candidates using our new swap decision engine
       const swapEvaluation = await swapDecision.evaluateSwapCandidates(
         bot,

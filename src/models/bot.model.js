@@ -91,6 +91,12 @@ module.exports = (sequelize, Sequelize) => {
       allowNull: true,
       field: 'take_profit_percentage'
     },
+    useTakeProfit: {
+      type: Sequelize.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: 'use_take_profit'
+    },
     // Making sure to include these fields that were missing in the original python implementation
     globalPeakValue: {
       type: Sequelize.FLOAT,
