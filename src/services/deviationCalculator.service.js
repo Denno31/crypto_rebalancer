@@ -70,7 +70,7 @@ class DeviationCalculatorService {
         : null; // null means no previous data to compare
       
       // 5. Store the deviation calculation for historical tracking
-      await this.storeDeviationRecord(botId, currentCoin, targetCoin, currentPrice, targetPrice, relativeDeviation * 100);
+      await this.storeDeviationRecord(botId, currentCoin, targetCoin, currentPrice, targetPrice, relativeDeviation * 100,bot.resetCount);
       
       // Prepare comprehensive metrics response
       return {
@@ -182,7 +182,7 @@ class DeviationCalculatorService {
    * @param {Number} deviationPercent - Calculated deviation percentage
    * @returns {Promise<Object>} - Created deviation record
    */
-  async storeDeviationRecord(botId, baseCoin, targetCoin, basePrice, targetPrice, deviationPercent) {
+  async storeDeviationRecord(botId, baseCoin, targetCoin, basePrice, targetPrice, deviationPercent,resetCount) {
     try {
       return await CoinDeviation.create({
         botId,
@@ -191,7 +191,8 @@ class DeviationCalculatorService {
         basePrice,
         targetPrice,
         deviationPercent,
-        timestamp: new Date()
+        timestamp: new Date(),
+        resetCount
       });
     } catch (error) {
       console.error(`Failed to store deviation record: ${error.message}`);

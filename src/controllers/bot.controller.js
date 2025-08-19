@@ -798,11 +798,11 @@ const getBotSwapDecisions = async (req, res) => {
     }
     
     // Build query conditions
-    const whereCondition = { botId };
+    const whereCondition = { botId, resetCount: bot.resetCount };
     if (swapPerformed !== null) {
       whereCondition.swapPerformed = swapPerformed;
     }
-    console.log({limit,offset})
+    ``
     // Get swap decisions with pagination
     const swapDecisions = await BotSwapDecision.findAndCountAll({
       where: whereCondition,

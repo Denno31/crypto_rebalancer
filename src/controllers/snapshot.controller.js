@@ -31,13 +31,12 @@ exports.getPriceComparison = async (req, res) => {
     }
     
     // Get bot's current reset count from already retrieved bot object
-    const currentResetCount = bot.resetCount || 0;
     
     // Get all coin snapshots for this bot with current reset count
     const snapshots = await CoinSnapshot.findAll({
       where: { 
         botId,
-        resetCount: currentResetCount
+        
       }
     });
     
