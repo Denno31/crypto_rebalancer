@@ -30,6 +30,12 @@ module.exports = (sequelize, Sequelize) => {
     source: {
       type: Sequelize.STRING,
       allowNull: true
+    },
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
     }
   }, {
     tableName: 'price_history',

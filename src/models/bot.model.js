@@ -136,6 +136,12 @@ module.exports = (sequelize, Sequelize) => {
       defaultValue: "USDT",
       field: 'preferred_stablecoin',
       allowNull: true // Make it optional until migration adds the column
+    },
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
     }
   }, {
     tableName: 'bots',

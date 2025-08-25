@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const deviationController = require('../controllers/deviation.controller');
+const authMiddleware = require('../middleware/auth.middleware');
 
 /**
  * @route GET /api/deviations/bots/:botId
@@ -13,6 +14,6 @@ const deviationController = require('../controllers/deviation.controller');
  * @query {targetCoin} - Filter by target coin (optional)
  * @returns {Object} - Deviation data for charting
  */
-router.get('/bots/:botId', deviationController.getBotDeviations);
+router.get('/bots/:botId', authMiddleware.verifyToken, deviationController.getBotDeviations);
 
 module.exports = router;

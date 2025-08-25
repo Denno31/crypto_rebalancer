@@ -1,6 +1,7 @@
 const db = require('../models');
 const CoinDeviation = db.coinDeviation;
-const { Op } = require('sequelize');
+const CoinSnapshot = db.coinSnapshot;
+const { Op, col, where } = require('sequelize');
 
 /**
  * Get coin deviations for a specific bot
@@ -32,12 +33,24 @@ exports.getBotDeviations = async (req, res) => {
     if (baseCoin) whereCondition.base_coin = baseCoin;
     if (targetCoin) whereCondition.target_coin = targetCoin;
     
+    // Get bot's current reset count if we have a botId
+    let currentResetCount = 0;
+    if (botId) {
+      const bot = await db.bot.findByPk(botId);
+      if (bot) {
+        currentResetCount = bot.resetCount || 0;
+      }
+    }
+    
+    // Add reset_count to where condition to filter out data from before resets
+    whereCondition.reset_count = currentResetCount;
+    
     // Query the database
     const deviations = await CoinDeviation.findAll({
       where: whereCondition,
       order: [['timestamp', 'ASC']],
       offset: (page - 1) * limit,
-      limit: limit
+      limit: limit,
     });
     
 
@@ -46,7 +59,7 @@ exports.getBotDeviations = async (req, res) => {
     const groupedData = {};
     const allCoins = new Set();
     
-    deviations.forEach(dev => {
+    deviations.forEach( dev => {
       // Track all unique coins
       allCoins.add(dev.baseCoin);
       allCoins.add(dev.targetCoin);
@@ -57,16 +70,17 @@ exports.getBotDeviations = async (req, res) => {
       if (!groupedData[pairKey]) {
         groupedData[pairKey] = [];
       }
-      
       groupedData[pairKey].push({
         timestamp: dev.timestamp,
         baseCoin: dev.baseCoin,
         targetCoin: dev.targetCoin,
         basePrice: dev.basePrice,
         targetPrice: dev.targetPrice,
-        deviationPercent: dev.deviationPercent
+        deviationPercent: dev.deviationPercent,
       });
     });
+
+    
     
     // Get the latest deviation for each pair (for heatmap view)
     const latestDeviations = {};
@@ -79,14 +93,31 @@ exports.getBotDeviations = async (req, res) => {
         latestDeviations[baseCoin][targetCoin] = baseCoin === targetCoin ? 0 : null;
       });
     });
+
     
     // Fill in the latest values
-    Object.entries(groupedData).forEach(([pairKey, deviations]) => {
+    Object.entries(groupedData).forEach(async ([pairKey, deviations]) => {
       if (deviations.length > 0) {
         const latest = deviations[deviations.length - 1];
         
         // Store deviation percent directly for backward compatibility
         latestDeviations[latest.baseCoin][latest.targetCoin] = latest.deviationPercent;
+
+        // get snapshot data for base and target
+        const baseSnapshot = await CoinSnapshot.findOne({
+          where: {
+            bot_id: botId,
+            coin: latest.baseCoin,
+            reset_count: currentResetCount
+          }
+        });
+        const targetSnapshot = await CoinSnapshot.findOne({
+          where: {
+            bot_id: botId,
+            coin: latest.targetCoin,
+            reset_count: currentResetCount
+          }
+        });
         
         // Create a prices object if it doesn't exist
         if (!latestDeviations[latest.baseCoin].prices) {
@@ -97,11 +128,13 @@ exports.getBotDeviations = async (req, res) => {
         latestDeviations[latest.baseCoin].prices[latest.targetCoin] = {
           basePrice: latest.basePrice,
           targetPrice: latest.targetPrice,
-          timestamp: latest.timestamp
+          timestamp: latest.timestamp,
+          baseSnapshot,
+          targetSnapshot
         };
       }
     });
-    
+
     res.json({
       success: true,
       timeSeriesData: groupedData,

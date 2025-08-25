@@ -172,7 +172,8 @@ class SwapDecisionService {
             globalPeakValue: bot.globalPeakValue || 0,
             globalProtectionTriggered: false,
             swapPerformed: false,
-            reason: 'No candidates meet threshold criteria'
+            reason: 'No candidates meet threshold criteria',
+            resetCount: bot.resetCount
           });
         }
         
@@ -212,7 +213,8 @@ class SwapDecisionService {
           currentGlobalPeakValue: passesProgressProtection.netValue || null, // Store the netValue calculation
           globalProtectionTriggered: true,
           swapPerformed: false,
-          reason: passesProgressProtection.reason
+          reason: passesProgressProtection.reason,
+          resetCount: bot.resetCount
         });
         
         return {
@@ -249,7 +251,8 @@ class SwapDecisionService {
         currentGlobalPeakValue: passesProgressProtection.netValue || null, // Store the netValue calculation
         globalProtectionTriggered: !passesProgressProtection.allowed,
         swapPerformed: true,
-        reason: 'Swap recommended: meets threshold criteria'
+        reason: 'Swap recommended: meets threshold criteria',
+        resetCount: bot.resetCount
       });
       
       return {

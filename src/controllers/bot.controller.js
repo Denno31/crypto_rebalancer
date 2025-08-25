@@ -25,17 +25,17 @@ const botToResponse = (bot, currentAsset = null) => {
   const coinsArray = bot.getCoinsArray();
   
   // Calculate trade stats if trades are available
-  let totalTrades = 0;
-  let successfulTrades = 0;
-  let successRate = 0;
+  // let totalTrades = 0;
+  // let successfulTrades = 0;
+  // let successRate = 0;
   
-  if (bot.trades && Array.isArray(bot.trades)) {
-    totalTrades = bot.trades.length;
-    successfulTrades = bot.trades.filter(trade => 
-      trade.status === 'completed' || trade.status === 'success'
-    ).length;
-    successRate = totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 100) : 0;
-  }
+  // if (bot.trades && Array.isArray(bot.trades)) {
+  //   totalTrades = bot.trades.length;
+  //   successfulTrades = bot.trades.filter(trade => 
+  //     trade.status === 'completed' || trade.status === 'success'
+  //   ).length;
+  //   successRate = totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 100) : 0;
+  // }
   
   return {
     id: bot.id,
@@ -71,11 +71,8 @@ const botToResponse = (bot, currentAsset = null) => {
     takeProfitPercentage: bot.takeProfitPercentage,
     manualBudgetAmount: bot.manualBudgetAmount,
     // Add trade stats
-    tradeStats: {
-      totalTrades,
-      successfulTrades,
-      successRate
-    },
+    
+    useTakeProfit: bot.useTakeProfit || false,
     // Add current asset info if available
     currentAsset: currentAsset ? {
       coin: currentAsset.coin,
@@ -99,65 +96,79 @@ const getAllBots = async (req, res) => {
           model: BotAsset,
           required: false,
           attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
-        },
-        {
-          model: Trade,
-          as: 'trades', // Use the correct alias here
-          attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
-          limit: 10,
-          order: [['executedAt', 'DESC']]
         }
       ]
     });
-    
-    // Try to get exchange info from 3Commas
-    let accounts = [];
-    try {
-      const client = await threeCommasClientService(req);
-      const [error, accountsData] = await client.getAccounts();
-      if (!error) {
-        accounts = accountsData;
-      }
-    } catch (apiError) {
-      console.error('Error getting 3Commas accounts:', apiError);
-      // Don't fail the whole request if we can't get account info
-    }
-  
-    // Map to response format with current asset data
-    const botsResponse = bots.map(bot => {
-      // Find the current asset for this bot if available
-      let currentAsset = null;
-      if (bot.botAssets && bot.botAssets.length > 0) {
-        currentAsset = bot.botAssets.find(asset => asset.coin === bot.currentCoin);
-      }
-      
-      const botResponse = botToResponse(bot, currentAsset);
-      
-      // Add exchange info if available
-      const account = accounts.find(account => account.id == bot.accountId);
-      if (account) {
-        botResponse.exchangeName = account.exchange_name;
-        botResponse.exchangeIcon = account.market_icon;
-      }
-      
-      // Add trades to the response
-      botResponse.trades = bot.trades || [];
-      
-      // For frontend compatibility, also include botAssets
-      botResponse.botAssets = bot.botAssets || [];
-      
-      return botResponse;
+
+    // collect coins for price fetch
+    const coins = [...new Set(
+      bots.map(bot => bot.currentCoin)
+          .filter(coin => coin && !['USDT','USDC','BUSD','DAI'].includes(coin))
+    )];
+
+    const systemConfig = await db.systemConfig.findOne();
+    const apiConfig = await ApiConfig.findOne({ 
+      where: { userId: req.userId, name: '3commas' } 
     });
+
+    // fetch prices
+    const priceEntries = await Promise.all(
+      coins.map(async coin => {
+        try {
+          const { price, source } = await priceService.getPrice(systemConfig, apiConfig, coin, 'USDT');
+          return [coin, { price, source }];
+        } catch {
+          return [coin, null];
+        }
+      })
+    );
+    const priceData = Object.fromEntries(priceEntries);
+
+    // map bots to response
+    const botsResponse = await Promise.all(bots.map(async bot => {
+      let currentAsset = bot.botAssets?.find(a => a.coin === bot.currentCoin) || null;
+      const botResponse = botToResponse(bot, currentAsset);
+
+      // attach real-time price + pnl
+      if (bot.currentCoin) {
+        if (['USDT','USDC','BUSD','DAI'].includes(bot.currentCoin)) {
+          botResponse.realTimePrice = 1;
+        } else {
+          botResponse.realTimePrice = priceData[bot.currentCoin]?.price || null;
+          botResponse.priceSource = priceData[bot.currentCoin]?.source || null;
+
+          if (currentAsset && botResponse.realTimePrice) {
+            botResponse.realTimeUsdtEquivalent = currentAsset.amount * botResponse.realTimePrice;
+            botResponse.profit = botResponse.realTimeUsdtEquivalent - currentAsset.usdtEquivalent;
+            botResponse.profitPercentage = (botResponse.profit / currentAsset.usdtEquivalent) * 100;
+          }
+        }
+      }
+
+      // compute success rate via count queries (no trades array)
+      const totalTrades = await Trade.count({ where: { botId: bot.id,resetCount: bot.resetCount } });
+       
+      const successfulTrades = await Trade.count({ where: { botId: bot.id, status: 'completed', resetCount: bot.resetCount } });
+      const successRate = totalTrades > 0 ? (successfulTrades / totalTrades) * 100 : 0;
+
+      botResponse.botAssets = bot.botAssets || [];
+      botResponse.tradeStats = {
+        totalTrades,
+        successfulTrades,
+        successRate
+      };
+
+      return botResponse;
+    }));
     
     return res.json(botsResponse);
   } catch (error) {
     console.error('Error getting bots:', error);
-    return res.status(500).json({
-      message: "Error getting bots",
-      error: error.message
-    });
+    return res.status(500).json({ message: "Error getting bots", error: error.message });
   }
 };
+
+
 
 // Get single bot by ID
 const getBotById = async (req, res) => {
@@ -172,12 +183,6 @@ const getBotById = async (req, res) => {
       },
       include: [
         {
-          model: Trade,
-          as: 'trades',
-          attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
-          limit: 10,
-          order: [['executedAt', 'DESC']]
-        },{
           model: BotAsset,
           as: 'botAssets',
           attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
@@ -263,6 +268,28 @@ const getBotById = async (req, res) => {
     const botResponse = botToResponse(bot, currentAsset);
     botResponse.exchangeName = botAccountData?.exchange_name;
     botResponse.exchangeIcon = botAccountData?.market_icon;
+    
+    // Get recent trades separately (last 10)
+    const recentTrades = await Trade.findAll({
+      where: { botId: bot.id, resetCount: bot.resetCount },
+      attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
+      limit: 10,
+      order: [['executedAt', 'DESC']]
+    });
+    
+    // compute success rate via count queries (no trades array)
+    const totalTrades = await Trade.count({ where: { botId: bot.id, resetCount: bot.resetCount } });
+    const successfulTrades = await Trade.count({ where: { botId: bot.id, status: 'completed', resetCount: bot.resetCount } });
+    const successRate = totalTrades > 0 ? (successfulTrades / totalTrades) * 100 : 0;
+    
+    // Add trade stats and recent trades to response
+    botResponse.trades = recentTrades;
+    botResponse.tradeStats = {
+      totalTrades,
+      successfulTrades,
+      successRate
+    };
+    
     // Return bot with current asset info
     return res.json(botResponse);
   } catch (error) {
@@ -291,7 +318,8 @@ const createBot = async (req, res) => {
       allocationPercentage,
       manualBudgetAmount,
       preferredStablecoin,
-      takeProfitPercentage
+      takeProfitPercentage,
+      useTakeProfit
     } = req.body;
     
    
@@ -301,6 +329,13 @@ const createBot = async (req, res) => {
     if (!name || !coins || !thresholdPercentage || !checkInterval || !initialCoin || !accountId) {
       return res.status(400).json({
         message: "Missing required fields"
+      });
+    }
+    
+    // Validate take profit settings
+    if (useTakeProfit === true && (!takeProfitPercentage || isNaN(parseFloat(takeProfitPercentage)) || parseFloat(takeProfitPercentage) <= 0)) {
+      return res.status(400).json({
+        message: "When take profit is enabled, a valid take profit percentage greater than 0 must be provided"
       });
     }
     
@@ -318,6 +353,7 @@ const createBot = async (req, res) => {
       allocationPercentage: allocationPercentage === '' ? null : parseFloat(allocationPercentage),
       manualBudgetAmount: manualBudgetAmount === '' ? null : parseFloat(manualBudgetAmount),
       takeProfitPercentage: takeProfitPercentage === '' || isNaN(parseFloat(takeProfitPercentage)) ? null : parseFloat(takeProfitPercentage),
+      useTakeProfit: useTakeProfit === true, // Convert to boolean
       preferredStablecoin: preferredStablecoin || 'USDT',
       userId: req.userId
     });
@@ -358,6 +394,16 @@ const updateBot = async (req, res) => {
     // Handle coins field specially if it's an array
     if (updateData.coins && Array.isArray(updateData.coins)) {
       updateData.coins = updateData.coins.join(',');
+    }
+    
+    // Validate take profit settings
+    if (updateData.useTakeProfit === true && 
+        (!updateData.takeProfitPercentage || 
+         isNaN(parseFloat(updateData.takeProfitPercentage)) || 
+         parseFloat(updateData.takeProfitPercentage) <= 0)) {
+      return res.status(400).json({
+        message: "When take profit is enabled, a valid take profit percentage greater than 0 must be provided"
+      });
     }
     
     // Handle numeric fields to prevent PostgreSQL type errors
@@ -580,9 +626,21 @@ const getBotPrices = async (req, res) => {
       query.timestamp = { ...query.timestamp, [Op.lte]: toTime };
     }
     
+    // Create a separate query for price history to include reset count
+    const priceQuery = { ...query };
+    
+    // Get bot's current reset count if we have a botId
+    if (botId) {
+      const bot = await Bot.findByPk(botId);
+      if (bot) {
+        // Add reset_count to query to filter pre-reset data
+        priceQuery.resetCount = bot.resetCount || 0;
+      }
+    }
+    
     // Get prices
     const prices = await PriceHistory.findAll({
-      where: query,
+      where: priceQuery,
       order: [['timestamp', 'DESC']],
       limit,
       offset: (page - 1) * limit
@@ -612,6 +670,16 @@ const getBotTrades = async (req, res) => {
     if (status) {
       query.status = status;
     }
+    
+    // Get bot's current reset count if we have a botId
+    if (botId) {
+      const bot = await Bot.findByPk(botId);
+      if (bot) {
+        // Add reset_count to query to filter pre-reset data
+        query.resetCount = bot.resetCount || 0;
+      }
+    }
+    console.log({query})
     
     // Get trades
     const trades = await Trade.findAll({
@@ -647,9 +715,21 @@ const getBotLogs = async (req, res) => {
       query.level = level.toUpperCase();
     }
     
+    // Make a separate query for logs to include reset count
+    const logQuery = { ...query };
+    
+    // Get bot's current reset count if we have a botId
+    if (botId) {
+      const bot = await Bot.findByPk(botId);
+      if (bot) {
+        // Add reset_count to query to filter pre-reset data
+        logQuery.resetCount = bot.resetCount || 0;
+      }
+    }
+    
     // Get logs
     const logs = await LogEntry.findAll({
-      where: query,
+      where: logQuery,
       order: [['timestamp', 'DESC']],
       limit,
       offset: (page - 1) * limit
@@ -765,11 +845,11 @@ const getBotSwapDecisions = async (req, res) => {
     }
     
     // Build query conditions
-    const whereCondition = { botId };
+    const whereCondition = { botId, resetCount: bot.resetCount };
     if (swapPerformed !== null) {
       whereCondition.swapPerformed = swapPerformed;
     }
-    console.log({limit,offset})
+    ``
     // Get swap decisions with pagination
     const swapDecisions = await BotSwapDecision.findAndCountAll({
       where: whereCondition,
@@ -834,39 +914,49 @@ const getBotAssets = async (req, res) => {
       apiConfig.apiSecret
     );
     
-    // Get bot assets from database
+    // Get bot if not already retrieved
+    let botDetails = await Bot.findByPk(botId);
+    if (!botDetails) {
+      return res.status(404).json({ message: "Bot not found" });
+    }
+    const currentResetCount = botDetails.resetCount || 0;
+    
+    // Get bot assets from database with current reset count
     const botAssets = await BotAsset.findAll({
-      where: { botId },
+      where: { 
+        botId,
+        resetCount: currentResetCount 
+      },
       order: [['updatedAt', 'DESC']]
     });
     
     // If we have a current coin, ensure we get up-to-date USDT value
     let updatedAssets = [...botAssets];
     
-    if (bot.currentCoin) {
+    if (botDetails.currentCoin) {
       try {
         // Get preferred stablecoin or default to USDT
-        const stablecoin = bot.preferredStablecoin || 'USDT';
+        const stablecoin = botDetails.preferredStablecoin || 'USDT';
         
         // Get latest price in the preferred stablecoin
         const { price } = await priceService.getPrice(
           { pricingSource: '3commas', fallbackSource: 'coingecko' },
           { apiKey: apiConfig.apiKey, apiSecret: apiConfig.apiSecret },
-          bot.currentCoin,
+          botDetails.currentCoin,
           stablecoin,
           botId
         );
         
         // Find or create asset record for current coin
-        let currentAsset = botAssets.find(asset => asset.coin === bot.currentCoin);
+        let currentAsset = botAssets.find(asset => asset.coin === botDetails.currentCoin);
         
         // If bot has a current coin but no asset record, create one with estimated data
         if (!currentAsset) {
           // Attempt to get balance from 3Commas
-          const [error, accountData] = await threeCommasClient.request('accounts', bot.accountId);
+          const [error, accountData] = await threeCommasClient.request('accounts', botDetails.accountId);
           
           if (!error && accountData && accountData.balances) {
-            const coinBalance = accountData.balances.find(b => b.currency_code === bot.currentCoin);
+            const coinBalance = accountData.balances.find(b => b.currency_code === botDetails.currentCoin);
             
             if (coinBalance && parseFloat(coinBalance.amount) > 0) {
               // Create asset record
@@ -875,8 +965,9 @@ const getBotAssets = async (req, res) => {
               
               currentAsset = await BotAsset.create({
                 botId,
-                coin: bot.currentCoin,
+                coin: botDetails.currentCoin,
                 amount,
+                resetCount: currentResetCount,
                 entryPrice: price,
                 usdtEquivalent: stablecoinEquivalent, // Keep field name for DB compatibility
                 stablecoin: stablecoin,

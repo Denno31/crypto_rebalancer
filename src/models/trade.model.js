@@ -73,6 +73,12 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.DATE,
       defaultValue: Sequelize.NOW,
       field: 'executed_at'
+    },
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
     }
   }, {
     tableName: 'trades',

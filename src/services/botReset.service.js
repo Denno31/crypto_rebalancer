@@ -4,7 +4,6 @@ const db = require('../models');
 const Bot = db.bot;
 const BotResetEvent = db.botResetEvent;
 const ThreeCommasService = require('./threeCommas.service');
-const botService = require('./bot.service'); // Import the singleton instance directly
 const chalk = require('chalk');
 
 /**
@@ -48,8 +47,10 @@ class BotResetService {
    */
   async resetBot(botId, options = {}) {
     const { resetType = 'soft', sellToStablecoin = false } = options;
-    console.log('resetting bot', resetType)
     try {
+      // Import bot service inside the function to avoid circular dependency
+      const botService = require('./bot.service');
+      
       // Find the bot
       const bot = await Bot.findByPk(botId);
       if (!bot) {
@@ -107,6 +108,12 @@ class BotResetService {
         where: { botId }
       });
       
+      // Increment reset count
+      const currentResetCount = bot.resetCount || 0;
+      const newResetCount = currentResetCount + 1;
+      
+      logMessage('INFO', `Incrementing reset_count from ${currentResetCount} to ${newResetCount} for bot ${botId}`, bot.name);
+      
       // Reset bot state
       const updates = {
         currentCoin: null, // Set to null so bot initialization logic can create new snapshots
@@ -117,7 +124,8 @@ class BotResetService {
         protectionCooldownUntil: null,
         isLocked: false,
         errorState: null,
-        errorCount: 0
+        errorCount: 0,
+        resetCount: newResetCount // Increment reset count
       };
       
       logMessage('INFO', `Updating bot state for bot ${botId}`, bot.name);
@@ -182,8 +190,8 @@ class BotResetService {
         db
       );
       
-      // Update bot's current coin
-      await bot.update({ currentCoin: targetStablecoin });
+      // Update bot's current coin should be null so that we start with new snapshots
+      await bot.update({ currentCoin: null });
       
       logMessage('INFO', `Successfully sold ${coinAmount} ${currentCoin} to ${targetStablecoin}`, bot.name);
     } catch (error) {

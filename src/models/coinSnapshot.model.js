@@ -47,6 +47,12 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.FLOAT,
       defaultValue: 0.0,
       field: 'max_units_reached'
+    },
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
     }
   }, {
     tableName: 'coin_snapshots',

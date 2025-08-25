@@ -126,6 +126,12 @@ module.exports = (sequelize, Sequelize) => {
     // Timestamps are handled automatically by Sequelize
     // createdAt -> created_at
     // updatedAt -> updated_at
+    resetCount: {
+      type: Sequelize.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'reset_count'
+    }
   }, {
     timestamps: true,
     underscored: true,
