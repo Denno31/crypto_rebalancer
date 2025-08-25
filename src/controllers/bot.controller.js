@@ -76,6 +76,7 @@ const botToResponse = (bot, currentAsset = null) => {
       successfulTrades,
       successRate
     },
+    useTakeProfit: bot.useTakeProfit || false,
     // Add current asset info if available
     currentAsset: currentAsset ? {
       coin: currentAsset.coin,
@@ -102,53 +103,93 @@ const getAllBots = async (req, res) => {
         },
         {
           model: Trade,
-          as: 'trades', // Use the correct alias here
+          as: 'trades',
           attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
           limit: 10,
           order: [['executedAt', 'DESC']]
         }
       ]
     });
-    
+
+    // Collect all unique coins across bots (excluding stablecoins)
+    const coins = [...new Set(
+      bots
+        .map(bot => bot.currentCoin)
+        .filter(coin => coin && !['USDT', 'USDC', 'BUSD', 'DAI'].includes(coin))
+    )];
+    const systemConfig = await db.systemConfig.findOne();
+    const apiConfig = await ApiConfig.findOne({ 
+      where: { userId: req.userId, name: '3commas' } 
+    });
+
+    // Fetch prices in parallel using existing getPrice
+    const priceEntries = await Promise.all(
+      coins.map(async coin => {
+        try {
+          const { price, source } = await priceService.getPrice(
+            systemConfig, 
+            apiConfig, 
+            coin, 
+            'USDT'
+          );
+          return [coin, { price, source }];
+        } catch (err) {
+          console.error(`Error fetching price for ${coin}:`, err.message);
+          return [coin, null];
+        }
+      })
+    );
+    const priceData = Object.fromEntries(priceEntries); // { BTC: {price, source}, ETH: {...} }
+
     // Try to get exchange info from 3Commas
     let accounts = [];
     try {
       const client = await threeCommasClientService(req);
       const [error, accountsData] = await client.getAccounts();
-      if (!error) {
-        accounts = accountsData;
-      }
+      if (!error) accounts = accountsData;
     } catch (apiError) {
       console.error('Error getting 3Commas accounts:', apiError);
-      // Don't fail the whole request if we can't get account info
     }
-  
-    // Map to response format with current asset data
+
+    // Map bots to response format
     const botsResponse = bots.map(bot => {
-      // Find the current asset for this bot if available
       let currentAsset = null;
       if (bot.botAssets && bot.botAssets.length > 0) {
         currentAsset = bot.botAssets.find(asset => asset.coin === bot.currentCoin);
       }
-      
+
       const botResponse = botToResponse(bot, currentAsset);
-      
-      // Add exchange info if available
+
+      // Add real-time price if available
+      if (bot.currentCoin) {
+        if (['USDT', 'USDC', 'BUSD', 'DAI'].includes(bot.currentCoin)) {
+          botResponse.realTimePrice = 1; // stablecoins
+        } else {
+          botResponse.realTimePrice = priceData[bot.currentCoin]?.price || null;
+          botResponse.priceSource = priceData[bot.currentCoin]?.source || null;
+          // add profit/loss depending on the current price * units being held. Also add the units value
+          if (currentAsset) {
+            botResponse.realTimeUsdtEquivalent = currentAsset.amount * botResponse.realTimePrice;
+            botResponse.profit = botResponse.realTimeUsdtEquivalent - currentAsset.usdtEquivalent;
+            botResponse.profitPercentage = (botResponse.profit / currentAsset.usdtEquivalent) * 100;
+          }
+        }
+      }
+
+      // Add exchange info
       const account = accounts.find(account => account.id == bot.accountId);
       if (account) {
         botResponse.exchangeName = account.exchange_name;
         botResponse.exchangeIcon = account.market_icon;
       }
-      
-      // Add trades to the response
+
+      // Include trades + botAssets
       botResponse.trades = bot.trades || [];
-      
-      // For frontend compatibility, also include botAssets
       botResponse.botAssets = bot.botAssets || [];
-      
+
       return botResponse;
     });
-    
+
     return res.json(botsResponse);
   } catch (error) {
     console.error('Error getting bots:', error);
@@ -158,6 +199,8 @@ const getAllBots = async (req, res) => {
     });
   }
 };
+
+
 
 // Get single bot by ID
 const getBotById = async (req, res) => {
@@ -291,7 +334,8 @@ const createBot = async (req, res) => {
       allocationPercentage,
       manualBudgetAmount,
       preferredStablecoin,
-      takeProfitPercentage
+      takeProfitPercentage,
+      useTakeProfit
     } = req.body;
     
    
@@ -301,6 +345,13 @@ const createBot = async (req, res) => {
     if (!name || !coins || !thresholdPercentage || !checkInterval || !initialCoin || !accountId) {
       return res.status(400).json({
         message: "Missing required fields"
+      });
+    }
+    
+    // Validate take profit settings
+    if (useTakeProfit === true && (!takeProfitPercentage || isNaN(parseFloat(takeProfitPercentage)) || parseFloat(takeProfitPercentage) <= 0)) {
+      return res.status(400).json({
+        message: "When take profit is enabled, a valid take profit percentage greater than 0 must be provided"
       });
     }
     
@@ -318,6 +369,7 @@ const createBot = async (req, res) => {
       allocationPercentage: allocationPercentage === '' ? null : parseFloat(allocationPercentage),
       manualBudgetAmount: manualBudgetAmount === '' ? null : parseFloat(manualBudgetAmount),
       takeProfitPercentage: takeProfitPercentage === '' || isNaN(parseFloat(takeProfitPercentage)) ? null : parseFloat(takeProfitPercentage),
+      useTakeProfit: useTakeProfit === true, // Convert to boolean
       preferredStablecoin: preferredStablecoin || 'USDT',
       userId: req.userId
     });
@@ -358,6 +410,16 @@ const updateBot = async (req, res) => {
     // Handle coins field specially if it's an array
     if (updateData.coins && Array.isArray(updateData.coins)) {
       updateData.coins = updateData.coins.join(',');
+    }
+    
+    // Validate take profit settings
+    if (updateData.useTakeProfit === true && 
+        (!updateData.takeProfitPercentage || 
+         isNaN(parseFloat(updateData.takeProfitPercentage)) || 
+         parseFloat(updateData.takeProfitPercentage) <= 0)) {
+      return res.status(400).json({
+        message: "When take profit is enabled, a valid take profit percentage greater than 0 must be provided"
+      });
     }
     
     // Handle numeric fields to prevent PostgreSQL type errors
