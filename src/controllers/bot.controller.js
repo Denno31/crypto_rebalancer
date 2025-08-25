@@ -25,17 +25,17 @@ const botToResponse = (bot, currentAsset = null) => {
   const coinsArray = bot.getCoinsArray();
   
   // Calculate trade stats if trades are available
-  let totalTrades = 0;
-  let successfulTrades = 0;
-  let successRate = 0;
+  // let totalTrades = 0;
+  // let successfulTrades = 0;
+  // let successRate = 0;
   
-  if (bot.trades && Array.isArray(bot.trades)) {
-    totalTrades = bot.trades.length;
-    successfulTrades = bot.trades.filter(trade => 
-      trade.status === 'completed' || trade.status === 'success'
-    ).length;
-    successRate = totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 100) : 0;
-  }
+  // if (bot.trades && Array.isArray(bot.trades)) {
+  //   totalTrades = bot.trades.length;
+  //   successfulTrades = bot.trades.filter(trade => 
+  //     trade.status === 'completed' || trade.status === 'success'
+  //   ).length;
+  //   successRate = totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 100) : 0;
+  // }
   
   return {
     id: bot.id,
@@ -71,11 +71,7 @@ const botToResponse = (bot, currentAsset = null) => {
     takeProfitPercentage: bot.takeProfitPercentage,
     manualBudgetAmount: bot.manualBudgetAmount,
     // Add trade stats
-    tradeStats: {
-      totalTrades,
-      successfulTrades,
-      successRate
-    },
+    
     useTakeProfit: bot.useTakeProfit || false,
     // Add current asset info if available
     currentAsset: currentAsset ? {
@@ -100,75 +96,48 @@ const getAllBots = async (req, res) => {
           model: BotAsset,
           required: false,
           attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
-        },
-        {
-          model: Trade,
-          as: 'trades',
-          attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
-          limit: 10,
-          order: [['executedAt', 'DESC']]
         }
       ]
     });
 
-    // Collect all unique coins across bots (excluding stablecoins)
+    // collect coins for price fetch
     const coins = [...new Set(
-      bots
-        .map(bot => bot.currentCoin)
-        .filter(coin => coin && !['USDT', 'USDC', 'BUSD', 'DAI'].includes(coin))
+      bots.map(bot => bot.currentCoin)
+          .filter(coin => coin && !['USDT','USDC','BUSD','DAI'].includes(coin))
     )];
+
     const systemConfig = await db.systemConfig.findOne();
     const apiConfig = await ApiConfig.findOne({ 
       where: { userId: req.userId, name: '3commas' } 
     });
 
-    // Fetch prices in parallel using existing getPrice
+    // fetch prices
     const priceEntries = await Promise.all(
       coins.map(async coin => {
         try {
-          const { price, source } = await priceService.getPrice(
-            systemConfig, 
-            apiConfig, 
-            coin, 
-            'USDT'
-          );
+          const { price, source } = await priceService.getPrice(systemConfig, apiConfig, coin, 'USDT');
           return [coin, { price, source }];
-        } catch (err) {
-          console.error(`Error fetching price for ${coin}:`, err.message);
+        } catch {
           return [coin, null];
         }
       })
     );
-    const priceData = Object.fromEntries(priceEntries); // { BTC: {price, source}, ETH: {...} }
+    const priceData = Object.fromEntries(priceEntries);
 
-    // Try to get exchange info from 3Commas
-    let accounts = [];
-    try {
-      const client = await threeCommasClientService(req);
-      const [error, accountsData] = await client.getAccounts();
-      if (!error) accounts = accountsData;
-    } catch (apiError) {
-      console.error('Error getting 3Commas accounts:', apiError);
-    }
-
-    // Map bots to response format
-    const botsResponse = bots.map(bot => {
-      let currentAsset = null;
-      if (bot.botAssets && bot.botAssets.length > 0) {
-        currentAsset = bot.botAssets.find(asset => asset.coin === bot.currentCoin);
-      }
-
+    // map bots to response
+    const botsResponse = await Promise.all(bots.map(async bot => {
+      let currentAsset = bot.botAssets?.find(a => a.coin === bot.currentCoin) || null;
       const botResponse = botToResponse(bot, currentAsset);
 
-      // Add real-time price if available
+      // attach real-time price + pnl
       if (bot.currentCoin) {
-        if (['USDT', 'USDC', 'BUSD', 'DAI'].includes(bot.currentCoin)) {
-          botResponse.realTimePrice = 1; // stablecoins
+        if (['USDT','USDC','BUSD','DAI'].includes(bot.currentCoin)) {
+          botResponse.realTimePrice = 1;
         } else {
           botResponse.realTimePrice = priceData[bot.currentCoin]?.price || null;
           botResponse.priceSource = priceData[bot.currentCoin]?.source || null;
-          // add profit/loss depending on the current price * units being held. Also add the units value
-          if (currentAsset) {
+
+          if (currentAsset && botResponse.realTimePrice) {
             botResponse.realTimeUsdtEquivalent = currentAsset.amount * botResponse.realTimePrice;
             botResponse.profit = botResponse.realTimeUsdtEquivalent - currentAsset.usdtEquivalent;
             botResponse.profitPercentage = (botResponse.profit / currentAsset.usdtEquivalent) * 100;
@@ -176,27 +145,26 @@ const getAllBots = async (req, res) => {
         }
       }
 
-      // Add exchange info
-      const account = accounts.find(account => account.id == bot.accountId);
-      if (account) {
-        botResponse.exchangeName = account.exchange_name;
-        botResponse.exchangeIcon = account.market_icon;
-      }
+      // compute success rate via count queries (no trades array)
+      const totalTrades = await Trade.count({ where: { botId: bot.id,resetCount: bot.resetCount } });
+       
+      const successfulTrades = await Trade.count({ where: { botId: bot.id, status: 'completed', resetCount: bot.resetCount } });
+      const successRate = totalTrades > 0 ? (successfulTrades / totalTrades) * 100 : 0;
 
-      // Include trades + botAssets
-      botResponse.trades = bot.trades || [];
       botResponse.botAssets = bot.botAssets || [];
+      botResponse.tradeStats = {
+        totalTrades,
+        successfulTrades,
+        successRate
+      };
 
       return botResponse;
-    });
-
+    }));
+    
     return res.json(botsResponse);
   } catch (error) {
     console.error('Error getting bots:', error);
-    return res.status(500).json({
-      message: "Error getting bots",
-      error: error.message
-    });
+    return res.status(500).json({ message: "Error getting bots", error: error.message });
   }
 };
 
@@ -215,12 +183,6 @@ const getBotById = async (req, res) => {
       },
       include: [
         {
-          model: Trade,
-          as: 'trades',
-          attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
-          limit: 10,
-          order: [['executedAt', 'DESC']]
-        },{
           model: BotAsset,
           as: 'botAssets',
           attributes: ['coin', 'amount', 'entryPrice', 'usdtEquivalent', 'lastUpdated', 'stablecoin']
@@ -306,6 +268,28 @@ const getBotById = async (req, res) => {
     const botResponse = botToResponse(bot, currentAsset);
     botResponse.exchangeName = botAccountData?.exchange_name;
     botResponse.exchangeIcon = botAccountData?.market_icon;
+    
+    // Get recent trades separately (last 10)
+    const recentTrades = await Trade.findAll({
+      where: { botId: bot.id, resetCount: bot.resetCount },
+      attributes: ['id', 'status', 'fromCoin', 'toCoin', 'amount', 'executedAt'],
+      limit: 10,
+      order: [['executedAt', 'DESC']]
+    });
+    
+    // compute success rate via count queries (no trades array)
+    const totalTrades = await Trade.count({ where: { botId: bot.id, resetCount: bot.resetCount } });
+    const successfulTrades = await Trade.count({ where: { botId: bot.id, status: 'completed', resetCount: bot.resetCount } });
+    const successRate = totalTrades > 0 ? (successfulTrades / totalTrades) * 100 : 0;
+    
+    // Add trade stats and recent trades to response
+    botResponse.trades = recentTrades;
+    botResponse.tradeStats = {
+      totalTrades,
+      successfulTrades,
+      successRate
+    };
+    
     // Return bot with current asset info
     return res.json(botResponse);
   } catch (error) {
@@ -695,6 +679,7 @@ const getBotTrades = async (req, res) => {
         query.resetCount = bot.resetCount || 0;
       }
     }
+    console.log({query})
     
     // Get trades
     const trades = await Trade.findAll({
