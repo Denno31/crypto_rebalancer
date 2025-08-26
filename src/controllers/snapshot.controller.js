@@ -14,6 +14,12 @@ const ApiConfig = db.apiConfig;
 exports.getPriceComparison = async (req, res) => {
   try {
     const botId = req.params.botId;
+    // lets add pagination
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    console.log(page,limit,offset)
     
     // Verify bot belongs to the user
     const bot = await Bot.findOne({
@@ -32,12 +38,20 @@ exports.getPriceComparison = async (req, res) => {
     
     // Get bot's current reset count from already retrieved bot object
     
-    // Get all coin snapshots for this bot with current reset count
+    // Get total count for pagination
+    const totalCount = await CoinSnapshot.count({
+      where: { 
+        botId
+      }
+    });
+
+    // Get all coin snapshots for this bot with pagination
     const snapshots = await CoinSnapshot.findAll({
       where: { 
-        botId,
-        
-      }
+        botId
+      },
+      limit,
+      offset
     });
     
     if (!snapshots || snapshots.length === 0) {
@@ -120,7 +134,10 @@ exports.getPriceComparison = async (req, res) => {
       botId,
       botName: bot.name,
       priceComparisons: priceComparisonData,
-      preferredStablecoin: stablecoin
+      preferredStablecoin: stablecoin,
+      totalCount,
+      page,
+      limit
     });
     
   } catch (error) {
