@@ -681,6 +681,11 @@ const getBotTrades = async (req, res) => {
     }
     console.log({query})
     
+    // Get trades count for pagination
+    const totalCount = await Trade.count({
+      where: query
+    });
+    
     // Get trades
     const trades = await Trade.findAll({
       where: query,
@@ -689,7 +694,16 @@ const getBotTrades = async (req, res) => {
       offset: (page - 1) * limit
     });
     
-    return res.json(trades);
+    // Return both trades and pagination info
+    return res.json({
+      trades,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        pages: Math.ceil(totalCount / limit)
+      }
+    });
   } catch (error) {
     console.error('Error getting bot trades:', error);
     return res.status(500).json({
