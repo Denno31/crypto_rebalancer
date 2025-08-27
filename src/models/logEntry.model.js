@@ -51,10 +51,19 @@ module.exports = (sequelize, Sequelize) => {
   // Static method to log messages
   LogEntry.log = async function(db, level, message, botId = null) {
     try {
+      let resetCount = 0;
+      
+      // If botId is provided, fetch the current reset count from the bot
+      if (botId) {
+        const bot = await db.bot.findByPk(botId);
+        resetCount = bot ? bot.resetCount : 0;
+      }
+      
       const entry = await this.create({
         level: level.toUpperCase(),
         message,
         botId,
+        resetCount,
         timestamp: new Date()
       });
       

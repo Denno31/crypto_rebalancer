@@ -609,49 +609,107 @@ const getBotState = async (req, res) => {
 // Get price history for a bot
 const getBotPrices = async (req, res) => {
   try {
-    const botId = req.params.botId;
-    const fromTime = req.query.fromTime ? new Date(req.query.fromTime) : null;
-    const toTime = req.query.toTime ? new Date(req.query.toTime) : null;
-    const limit = parseInt(req.query.limit) || 10;
-    const page = parseInt(req.query.page) || 1;
-    
-    // Build query
-    const query = { botId };
-    
-    if (fromTime) {
-      query.timestamp = { ...query.timestamp, [Op.gte]: fromTime };
+    const botId = parseInt(req.params.botId, 10);
+    const fromTime = req.query.from_time ? new Date(req.query.from_time) : null;
+    const toTime = req.query.to_time ? new Date(req.query.to_time) : null;
+    const limit = parseInt(req.query.limit, 10) || 200; // rows for the "prices" list
+    const page = parseInt(req.query.page, 10) || 1;
+
+    if (!botId || !fromTime || !toTime) {
+      return res.status(400).json({ message: "botId, from_time and to_time are required" });
     }
-    
-    if (toTime) {
-      query.timestamp = { ...query.timestamp, [Op.lte]: toTime };
-    }
-    
-    // Create a separate query for price history to include reset count
-    const priceQuery = { ...query };
-    
-    // Get bot's current reset count if we have a botId
-    if (botId) {
-      const bot = await Bot.findByPk(botId);
-      if (bot) {
-        // Add reset_count to query to filter pre-reset data
-        priceQuery.resetCount = bot.resetCount || 0;
-      }
-    }
-    
-    // Get prices
+
+    // Current reset count
+    const bot = await Bot.findByPk(botId);
+    const resetCount = bot ? (bot.resetCount || 0) : 0;
+
+    // 1) Raw rows within range (for charts/tables)
+    const priceWhere = {
+      botId,
+      resetCount,
+      timestamp: { [Op.between]: [fromTime, toTime] },
+    };
+
     const prices = await PriceHistory.findAll({
-      where: priceQuery,
-      order: [['timestamp', 'DESC']],
+      where: priceWhere,
+      order: [["timestamp", "ASC"]],
       limit,
-      offset: (page - 1) * limit
+      offset: (page - 1) * limit,
     });
-    
-    return res.json(prices);
+
+    // 2) Per-coin start/end within the range
+    const data = await db.sequelize.query(
+      `
+      WITH starts AS (
+        SELECT ph.coin, ph.price AS start_price, ph.timestamp AS start_ts
+        FROM price_history ph
+        INNER JOIN (
+          SELECT coin, MIN(timestamp) AS ts
+          FROM price_history
+          WHERE bot_id = :botId
+            AND reset_count = :resetCount
+            AND timestamp BETWEEN CAST(:fromTime AS timestamptz) AND CAST(:toTime AS timestamptz)
+          GROUP BY coin
+        ) s ON s.coin = ph.coin AND ph.timestamp = s.ts
+        WHERE ph.bot_id = :botId AND ph.reset_count = :resetCount
+      ),
+      ends AS (
+        SELECT ph.coin, ph.price AS end_price, ph.timestamp AS end_ts
+        FROM price_history ph
+        INNER JOIN (
+          SELECT coin, MAX(timestamp) AS ts
+          FROM price_history
+          WHERE bot_id = :botId
+            AND reset_count = :resetCount
+            AND timestamp BETWEEN CAST(:fromTime AS timestamptz) AND CAST(:toTime AS timestamptz)
+          GROUP BY coin
+        ) e ON e.coin = ph.coin AND ph.timestamp = e.ts
+        WHERE ph.bot_id = :botId AND ph.reset_count = :resetCount
+      )
+      SELECT
+        s.coin,
+        s.start_price,
+        s.start_ts,
+        e.end_price,
+        e.end_ts
+      FROM starts s
+      INNER JOIN ends e ON e.coin = s.coin
+      ORDER BY s.coin;
+      `,
+      {
+        replacements: { botId, resetCount, fromTime, toTime },
+        type: db.sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    // Build lookup for quick merging
+    const changesMap = {};
+    for (const r of data) {
+      const start = Number(r.start_price);
+      const end = Number(r.end_price);
+      const abs = end - start;
+      const pct = start ? (abs / start) * 100 : null;
+      changesMap[r.coin] = {
+        startPrice: start,
+        endPrice: end,
+        change: Number(abs.toFixed(8)),
+        changePercent: pct === null ? null : Number(pct.toFixed(4)),
+      };
+    }
+
+    // Merge into each price row
+    const enriched = prices.map((row) => {
+      const obj = row.toJSON();
+      const extra = changesMap[obj.coin] || {};
+      return { ...obj, ...extra };
+    });
+
+    return res.json(enriched);
   } catch (error) {
-    console.error('Error getting bot prices:', error);
+    console.error("Error getting bot prices:", error);
     return res.status(500).json({
       message: "Error getting bot prices",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -679,7 +737,6 @@ const getBotTrades = async (req, res) => {
         query.resetCount = bot.resetCount || 0;
       }
     }
-    console.log({query})
     
     // Get trades count for pagination
     const totalCount = await Trade.count({
@@ -887,6 +944,64 @@ const getBotSwapDecisions = async (req, res) => {
   } catch (err) {
     console.error('Error getting bot swap decisions:', err);
     res.status(500).send({ message: err.message || 'Error retrieving bot swap decisions' });
+  }
+};
+
+// Get bot reset events with pagination
+const getBotResetEvents = async (req, res) => {
+  try {
+    const botId = req.params.botId;
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
+    
+    // Find bot and ensure it belongs to the user
+    const bot = await Bot.findOne({
+      where: {
+        id: botId,
+        userId: req.userId
+      }
+    });
+    
+    if (!bot) {
+      return res.status(404).json({
+        message: "Bot not found"
+      });
+    }
+    
+    // Build query conditions
+    const whereCondition = { botId };
+    
+    // Get total count for pagination
+    const totalCount = await db.botResetEvent.count({
+      where: whereCondition
+    });
+
+    console.log({totalCount})
+    
+    // Get reset events with pagination
+    const resetEvents = await db.botResetEvent.findAll({
+      where: whereCondition,
+      order: [['timestamp', 'DESC']],
+      limit,
+      offset: (page - 1) * limit
+    });
+    
+    // Return both reset events and pagination info
+    return res.json({
+      resetEvents,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        pages: Math.ceil(totalCount / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error getting bot reset events:', error);
+    return res.status(500).json({
+      message: "Error getting bot reset events",
+      error: error.message
+    });
   }
 };
 
@@ -1129,5 +1244,6 @@ module.exports = {
   getBotSwapDecisions,
   getBotAssets,
   resetBot,
-  getRealTimePrice
+  getRealTimePrice,
+  getBotResetEvents
 };

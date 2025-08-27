@@ -1044,7 +1044,7 @@ class ThreeCommasService {
           'Accept-Encoding': 'identity' // Add this header to match the Python client
         }
       });
-      console.log({response})
+      console.log(response.data.error)
       if (response.data.error) {
         console.error('Error executing trade:', response.data.error);
         return [response.data.error, null];
@@ -1067,6 +1067,7 @@ class ThreeCommasService {
 
     } catch (error) {
       console.error(`Error in executeDirectTrade: ${error.message}`);
+      console.log('error object itself',error)
       return [
         {
           code: 500,
