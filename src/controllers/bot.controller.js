@@ -947,6 +947,64 @@ const getBotSwapDecisions = async (req, res) => {
   }
 };
 
+// Get bot reset events with pagination
+const getBotResetEvents = async (req, res) => {
+  try {
+    const botId = req.params.botId;
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
+    
+    // Find bot and ensure it belongs to the user
+    const bot = await Bot.findOne({
+      where: {
+        id: botId,
+        userId: req.userId
+      }
+    });
+    
+    if (!bot) {
+      return res.status(404).json({
+        message: "Bot not found"
+      });
+    }
+    
+    // Build query conditions
+    const whereCondition = { botId };
+    
+    // Get total count for pagination
+    const totalCount = await db.botResetEvent.count({
+      where: whereCondition
+    });
+
+    console.log({totalCount})
+    
+    // Get reset events with pagination
+    const resetEvents = await db.botResetEvent.findAll({
+      where: whereCondition,
+      order: [['timestamp', 'DESC']],
+      limit,
+      offset: (page - 1) * limit
+    });
+    
+    // Return both reset events and pagination info
+    return res.json({
+      resetEvents,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        pages: Math.ceil(totalCount / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error getting bot reset events:', error);
+    return res.status(500).json({
+      message: "Error getting bot reset events",
+      error: error.message
+    });
+  }
+};
+
 const getBotAssets = async (req, res) => {
   try {
     const botId = req.params.botId;
@@ -1186,5 +1244,6 @@ module.exports = {
   getBotSwapDecisions,
   getBotAssets,
   resetBot,
-  getRealTimePrice
+  getRealTimePrice,
+  getBotResetEvents
 };
