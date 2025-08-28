@@ -720,12 +720,12 @@ class EnhancedSwapService {
       const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
 
       // Get the preferred stablecoin from the bot (or default to USDT)
-      const stablecoin = bot.preferredStablecoin || 'USDT';
+      const stablecoin = bot.preferredStablecoin
 
       // Log key information before executing trade
-      logMessage('INFO', `Trade amount: ${chalk.yellow(fromAsset.amount)} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.name);
+      logMessage('INFO', `Trade amount: ${chalk.yellow(fromAsset.amount)} ${fromCoin} (${fromValueUSDT.toFixed(2)} ${stablecoin})`, bot.name);
       logMessage('INFO', `Executing trade through 3Commas API...`, bot.name);
-      await LogEntry.log(db, 'TRADE', `Trade amount: ${fromAsset.amount} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.id);
+      await LogEntry.log(db, 'TRADE', `Trade amount: ${fromAsset.amount} ${fromCoin} (${fromValueUSDT.toFixed(2)} ${stablecoin})`, bot.id);
 
       // Check if we're in development/testing mode
       const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
