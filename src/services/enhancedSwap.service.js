@@ -773,16 +773,23 @@ class EnhancedSwapService {
         }
 
         // Find the actual available amount for the fromCoin
-        let tradeAmount = fromAsset.amount;
+        
         const fromCoinData = availableCoins.find(c => c.coin === fromCoin);
         
-        if (!fromCoinData || fromCoinData.amount <= 0 || tradeAmount > fromCoinData.amount) {
+        if (!fromCoinData || fromCoinData.amount <= 0 ) {
           const errorMsg = `Insufficient balance of ${fromCoin} for trade`;
           logMessage('ERROR', errorMsg, bot.name);
           await LogEntry.log(db, 'ERROR', errorMsg, bot.id);
           return { success: false, error: { message: errorMsg } };
         }
 
+        let tradeAmount = fromCoinData.amount;
+
+         // If stored amount is less than available, use stored amount as a cap
+         if (fromAsset.amount < tradeAmount) {
+          tradeAmount = fromAsset.amount;
+          logMessage('INFO', `Using stored amount cap: ${tradeAmount} ${fromCoin}`, bot.name);
+        }
         // Calculate how much to use based on real-time balance
         
         logMessage('INFO', `Available balance: ${tradeAmount} ${fromCoin} (${fromCoinData.amountInUsd} USD)`, bot.name);
