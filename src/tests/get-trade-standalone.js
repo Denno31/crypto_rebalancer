@@ -138,12 +138,22 @@ class ThreeCommasClient {
       // Use smart_trades_v2 API to get the trade details
       const [error, response] = await this.request('smart_trades_v2', tradeId);
       
-      console.log({error, response});
+      
       
       if (error) {
         return [error, null];
       }
       
+      if (response.status?.basic_type === 'failed' || response.status?.type === 'failed') {
+        return [
+          {
+            message: response.status?.error || 'Trade failed',
+            code: response.status?.type || 'failed',
+          },
+          null,
+        ];
+      }
+
       return [null, {
         tradeId: response.id,
         status: response.status,
@@ -162,8 +172,8 @@ class ThreeCommasClient {
 
 // Initialize with your API keys
 const client = new ThreeCommasClient(
-  '03b3ea94fedc4c66bb0617cab34fcd5cc43a80f46b6d4163acc17ed0d6e4f199', 
-  '81abd79dcfc04f77ba40946013269afbf1ef85e4007e5f146e2a3dccb3afe08191e64ae39120fe4c4b8ad6361d6c399d11817cb3f90e642043c455754c5fe8e0bb0e2269aed0ab20ce4b8d466033b6c3d036e14185e9eaf67c7ba8159f70cbbf843efe05'
+  'cc3345bb305d4f39a968938005a4c9cedbc030ec3f6e4d129926dd04aea0a750', 
+  '9130becba6a489faa03fe5ae6819f3acc1f1b206e22471b7431fe9deb608d69685df54c4db5a8e5ab1bf152821d5864448380cdaf1145e29a710c93fa4b1722bb3c7cc890da38ae22bff359a955da7e4687ca279434e70bb394ad42914ff06c979046187'
 );
 
 // Function to get trade by ID
@@ -182,7 +192,7 @@ async function getTradeById(tradeId) {
 }
 
 // Get trade ID from command line arguments or use a default value
-const tradeId = process.argv[2] || '35152568'; // Replace with your trade ID if not provided
+const tradeId = process.argv[2] || '35751581'; // Replace with your trade ID if not provided
 
 const getMarketPairs = async ()=>{
   const [error, marketPairs] = await client.request('accounts', 'market_pairs', { market_code: 'binance_us' });
@@ -197,7 +207,7 @@ const getMarketPairs = async ()=>{
   return marketPairs;
 }
 
-getMarketPairs();
+// getMarketPairs();
 
 // Execute the function
 getTradeById(tradeId)

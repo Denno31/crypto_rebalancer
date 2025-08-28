@@ -305,7 +305,7 @@ const getBotById = async (req, res) => {
 const createBot = async (req, res) => {
   try {
     // Extract bot data from request
-    console.log(req.body);
+    
     const { 
       name, 
       enabled, 

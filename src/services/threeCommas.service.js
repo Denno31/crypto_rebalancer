@@ -1161,12 +1161,20 @@ class ThreeCommasService {
       // Use smart_trades_v2 API to match the Python implementation
       const [error, response] = await this.request('smart_trades_v2', tradeId);
 
-      
-      
       if (error) {
         return [error, null];
       }
       
+      if (response.status?.basic_type === 'failed' || response.status?.type === 'failed') {
+        return [
+          {
+            message: response.status?.error || 'Trade failed',
+            code: response.status?.type || 'failed',
+          },
+          null,
+        ];
+      }
+
       return [null, {
         tradeId: response.id,
         status: response.status,
