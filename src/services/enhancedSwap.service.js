@@ -720,12 +720,12 @@ class EnhancedSwapService {
       const priceChange = (fromPrice - (fromAsset.entryPrice || fromPrice)) / (fromAsset.entryPrice || fromPrice) * 100;
 
       // Get the preferred stablecoin from the bot (or default to USDT)
-      const stablecoin = bot.preferredStablecoin || 'USDT';
+      const stablecoin = bot.preferredStablecoin
 
       // Log key information before executing trade
-      logMessage('INFO', `Trade amount: ${chalk.yellow(fromAsset.amount)} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.name);
+      logMessage('INFO', `Trade amount: ${chalk.yellow(fromAsset.amount)} ${fromCoin} (${fromValueUSDT.toFixed(2)} ${stablecoin})`, bot.name);
       logMessage('INFO', `Executing trade through 3Commas API...`, bot.name);
-      await LogEntry.log(db, 'TRADE', `Trade amount: ${fromAsset.amount} ${fromCoin} (${fromValueUSDT.toFixed(2)} USDT)`, bot.id);
+      await LogEntry.log(db, 'TRADE', `Trade amount: ${fromAsset.amount} ${fromCoin} (${fromValueUSDT.toFixed(2)} ${stablecoin})`, bot.id);
 
       // Check if we're in development/testing mode
       const isDev = process.env.NODE_ENV === 'development' || process.env.USE_MOCK_DATA === 'true';
@@ -773,15 +773,23 @@ class EnhancedSwapService {
         }
 
         // Find the actual available amount for the fromCoin
-        let tradeAmount = fromAsset.amount;
+        
         const fromCoinData = availableCoins.find(c => c.coin === fromCoin);
-        if (!fromCoinData || fromCoinData.amount <= 0 || tradeAmount > fromCoinData.amount) {
+        
+        if (!fromCoinData || fromCoinData.amount <= 0 ) {
           const errorMsg = `Insufficient balance of ${fromCoin} for trade`;
           logMessage('ERROR', errorMsg, bot.name);
           await LogEntry.log(db, 'ERROR', errorMsg, bot.id);
           return { success: false, error: { message: errorMsg } };
         }
 
+        let tradeAmount = fromCoinData.amount;
+
+         // If stored amount is less than available, use stored amount as a cap
+         if (fromAsset.amount < tradeAmount) {
+          tradeAmount = fromAsset.amount;
+          logMessage('INFO', `Using stored amount cap: ${tradeAmount} ${fromCoin}`, bot.name);
+        }
         // Calculate how much to use based on real-time balance
         
         logMessage('INFO', `Available balance: ${tradeAmount} ${fromCoin} (${fromCoinData.amountInUsd} USD)`, bot.name);
