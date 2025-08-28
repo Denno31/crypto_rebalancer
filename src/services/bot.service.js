@@ -47,6 +47,7 @@ class BotService {
    */
   constructor() {
     this.activeBots = {}; // Track active bot checking intervals
+    this.runningBots = {};
   }
 
   /**
@@ -99,11 +100,15 @@ class BotService {
       const interval = bot.checkInterval * 60 * 1000; // Convert minutes to ms
       
       this.activeBots[botId] = setInterval(async () => {
+        if (this.runningBots?.[botId]) return;  // block only this bot
+        this.runningBots[botId] = true;
         try {
           await this.checkBot(bot.id, systemConfig, apiConfig);
         } catch (error) {
           logMessage('ERROR', `Bot check failed: ${error.message}`, bot.name);
           await LogEntry.log(db, 'ERROR', `Bot check failed: ${error.message}`, botId);
+        }finally{
+          this.runningBots[botId] = false
         }
       }, interval);
       
