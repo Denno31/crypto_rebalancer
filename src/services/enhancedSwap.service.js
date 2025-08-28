@@ -775,6 +775,7 @@ class EnhancedSwapService {
         // Find the actual available amount for the fromCoin
         let tradeAmount = fromAsset.amount;
         const fromCoinData = availableCoins.find(c => c.coin === fromCoin);
+        
         if (!fromCoinData || fromCoinData.amount <= 0 || tradeAmount > fromCoinData.amount) {
           const errorMsg = `Insufficient balance of ${fromCoin} for trade`;
           logMessage('ERROR', errorMsg, bot.name);
