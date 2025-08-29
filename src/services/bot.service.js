@@ -113,7 +113,7 @@ class BotService {
       }, interval);
       
       // Run an initial check immediately
-      await this.checkBot(bot.id, systemConfig, apiConfig);
+      // await this.checkBot(bot.id, systemConfig, apiConfig);
       
       logMessage('INFO', `Bot ${bot.name} is running, checking every ${bot.checkInterval} minutes`);
       return true;
