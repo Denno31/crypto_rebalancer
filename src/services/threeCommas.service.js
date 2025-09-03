@@ -1085,7 +1085,7 @@ class ThreeCommasService {
    * @returns {Promise<Array>} - [error, statusData]
    */
   async waitForTradeCompletion(tradeId) {
-    const maxAttempts = 6; // Increased from 10
+    const maxAttempts = 10; // Increased from 10
     const waitTime = 3000; // Check every 3 seconds
     
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
