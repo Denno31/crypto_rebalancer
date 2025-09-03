@@ -195,7 +195,7 @@ class EnhancedSwapService {
               try {
                 await botResetService.resetBot(bot.id, { resetType: 'hard', sellToStablecoin: true });
 
-                await bot.update({ manualBudgetAmount: currentAsset.amount });
+                await bot.update({ manualBudgetAmount: currentAsset.amount * currentPrice });
                 logMessage('SUCCESS', `Take profit sell executed successfully: ${bot.currentCoin} → ${stablecoin}`, bot.name);
 
                 // Create success log entry with reset count
