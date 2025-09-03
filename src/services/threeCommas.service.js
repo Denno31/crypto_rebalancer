@@ -972,7 +972,7 @@ class ThreeCommasService {
         raw: response.data
       }];
     } catch (error) {
-      console.error(`Error in executeTrade: ${error.message}`);
+      console.error(`Error in executeTrade: `,error);
       return [
         {
           code: 500,
