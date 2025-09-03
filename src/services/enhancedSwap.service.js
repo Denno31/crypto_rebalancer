@@ -841,7 +841,7 @@ class EnhancedSwapService {
             tradeParams.fromCoin,
             tradeParams.toCoin,
             tradeParams.amount,
-            tradeParams.useTakeProfit,
+            false,
             tradeParams.takeProfitPercentage,
             tradeParams.mode,
             false, // isIndirectTrade (direct trade)
@@ -856,7 +856,7 @@ class EnhancedSwapService {
             tradeParams.fromCoin,
             tradeParams.toCoin,
             tradeParams.amount,
-            tradeParams.useTakeProfit,
+            false,
             tradeParams.takeProfitPercentage,
             tradeParams.mode,
             false, // isIndirectTrade (this isn't a multi-step trade step)
